@@ -1,5 +1,7 @@
 from typing import Any
+import boto3
 import httpx
+from botocore.exceptions import ClientError
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP server
@@ -31,6 +33,29 @@ Severity: {props.get("severity", "Unknown")}
 Description: {props.get("description", "No description available")}
 Instructions: {props.get("instruction", "No specific instructions provided")}
 """
+
+
+@mcp.tool()
+async def list_s3_buckets() -> str:
+    """List all S3 buckets in the AWS account."""
+    try:
+        s3_client = boto3.client("s3")
+        response = s3_client.list_buckets()
+
+        buckets = response.get("Buckets", [])
+        if not buckets:
+            return "No S3 buckets found."
+
+        bucket_list = []
+        for bucket in buckets:
+            bucket_info = f"• {bucket['Name']} (Created: {bucket['CreationDate'].strftime('%Y-%m-%d %H:%M:%S')})"
+            bucket_list.append(bucket_info)
+
+        return f"S3 Buckets ({len(buckets)} total):\n" + "\n".join(bucket_list)
+    except ClientError as e:
+        return f"AWS Error: {e.response['Error']['Message']}"
+    except Exception as e:
+        return f"Error listing buckets: {str(e)}"
 
 
 @mcp.tool()
