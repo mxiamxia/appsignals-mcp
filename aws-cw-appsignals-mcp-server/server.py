@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
+import json
 import logging
 from typing import Any, List, Optional, Union
-from aws_clients import ApplicationSignalsClient
+from aws_clients import ApplicationSignalsClient, CloudWatchClient
 from mcp.server.fastmcp import FastMCP
 from typing import Dict
 from utils import SERVICE_STATUS, MAX_SERVICES
@@ -19,9 +20,10 @@ mcp = FastMCP(
 )
 
 app_signals_client = ApplicationSignalsClient().application_signals_client
+cw_client = CloudWatchClient().cloudwatch_client
 
 @mcp.tool(name=MAP_SERVICES_BY_STATUS['name'], description=MAP_SERVICES_BY_STATUS['description'])
-async def map_services_by_status(
+def map_services_by_status(
     start_date: Optional[datetime], 
     end_date: Optional[datetime],
     max_services: int = MAX_SERVICES) -> Union[Dict[str, List[Any]], str]:
@@ -49,7 +51,7 @@ async def map_services_by_status(
             service_name = service['KeyAttributes']['Name']  
 
             if is_service and service_name:
-                if _is_service_healthy(service_name):
+                if _is_service_healthy(service['KeyAttributes'], start_date, end_date):
                     if len(result['healthy']) < max_services:
                         result['healthy'].append(service_name)
                 else:
@@ -62,8 +64,34 @@ async def map_services_by_status(
     
     return result
 
-# TODO: add healthy service check
-def _is_service_healthy(service_name):
+def _is_service_healthy(key_attributes, start_time, end_time):
+    slos = app_signals_client.list_service_level_objectives(
+        KeyAttributes=key_attributes
+    )
+
+    slo_summaries = slos['SloSummaries']
+
+    for summary in slo_summaries:
+        slo_arn = summary['Arn']
+        slo_response = app_signals_client.get_service_level_objective(
+            Id=slo_arn
+        )
+        slo = slo_response['Slo']
+        goal = slo['Goal']['AttainmentGoal']
+
+        if slo['EvaluationType'] == 'RequestBased':
+            metric = slo['RequestBasedSli']['RequestBasedSliMetric']['MonitoredRequestCountMetric']['GoodCountMetric']
+
+            data = cw_client.get_metric_data(
+                StartTime=start_time,
+                EndTime=end_time,
+                MetricDataQueries=metric)
+            
+            for result in data['MetricDataResults']:
+                values = result['Values']
+                for value in values:
+                    if value < goal:
+                        return False
     return True
 
 def main():
