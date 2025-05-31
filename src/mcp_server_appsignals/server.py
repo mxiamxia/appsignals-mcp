@@ -1,41 +1,18 @@
+import json
+import os
+from datetime import datetime, timedelta
+
 import boto3
 from botocore.exceptions import ClientError
 from mcp.server.fastmcp import FastMCP
-from datetime import datetime, timedelta
-import random
 
 # Initialize FastMCP server
-mcp = FastMCP("appsignal")
-
-
-@mcp.tool()
-async def list_s3_buckets() -> str:
-    """List all S3 buckets in the AWS account."""
-    try:
-        s3_client = boto3.client("s3", region_name="us-east-1")
-        response = s3_client.list_buckets()
-
-        buckets = response.get("Buckets", [])
-        if not buckets:
-            return "No S3 buckets found."
-
-        bucket_list = []
-        for bucket in buckets:
-            bucket_info = f"• {bucket['Name']} (Created: {bucket['CreationDate'].strftime('%Y-%m-%d %H:%M:%S')})"
-            bucket_list.append(bucket_info)
-
-        return f"S3 Buckets ({len(buckets)} total):\n" + "\n".join(bucket_list)
-    except ClientError as e:
-        return f"AWS Error: {e.response['Error']['Message']}"
-    except Exception as e:
-        return f"Error listing buckets: {str(e)}"
-
+mcp = FastMCP("appsignals")
 
 @mcp.tool()
 async def list_application_signals_services() -> str:
     """List all services monitored by AWS Application Signals."""
     try:
-        from datetime import datetime, timedelta
 
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
@@ -85,7 +62,6 @@ async def get_service_details(service_name: str) -> str:
         service_name: Name of the service to get details for
     """
     try:
-        from datetime import datetime, timedelta
 
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
@@ -174,11 +150,10 @@ async def get_service_metrics(
     Args:
         service_name: Name of the service to get metrics for
         metric_name: Specific metric name (optional - if not provided, shows available metrics)
-        statistic: Statistic type (Average, Sum, Maximum, Minimum, SampleCount)
+        statistic: Statistic type (Average, Sum, Maximum, Minimum, SampleCount) or extended statistic (p99, p95, etc). Defaults to Average.
         hours: Number of hours to look back (default 1)
     """
     try:
-        from datetime import datetime, timedelta
 
         appsignals = boto3.client("application-signals", region_name="us-east-1")
         cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
@@ -296,58 +271,47 @@ async def get_service_metrics(
 
 
 @mcp.tool()
-async def get_sli_status(hours: int = 4) -> str:
+async def get_sli_status(hours: int = 24) -> str:
     """Get SLI status for all services monitored by Application Signals.
 
     Args:
-        hours: Number of hours to look back (default 4)
+        hours: Number of hours to look back (default 24)
     """
     try:
-        # Calculate time range
+        # Calculate new time range
         end_time = datetime.utcnow().timestamp()
-        start_time = (datetime.utcnow() - timedelta(hours=hours)).timestamp()
+        start_time = (datetime.utcnow() - timedelta(hours=24)).timestamp()
 
-        # Define mock services with realistic SLI statuses
-        services = [
-            (
-                "pet-clinic-frontend-java",
-                "eks:demo/default",
-                "Service",
-                "BREACHED",
-                6,
-                4,
-                2,
-                ["Latency for Searching an Owner", "Availability for scheduling visits"],
-            ),
-            ("customers-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
-            ("vets-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
-            ("visits-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
-            (
-                "billing-service-python",
-                "eks:demo/default",
-                "Service",
-                "BREACHED",
-                1,
-                0,
-                1,
-                ["Latency of billing activities"],
-            ),
-            ("payment-service-dotnet", "eks:demo/default", "Service", "OK", 1, 1, 0, []),
-            ("nutrition-service-nodejs", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
-            ("admin-server-java", "eks:demo/default", "Service", "OK", 2, 2, 0, []),
-            ("discovery-server", "eks:demo/default", "Service", "OK", 1, 1, 0, []),
-            ("ai_booking_service", "ec2:demo/default", "Service", "OK", 3, 3, 0, []),
-            (
-                "ticketing-agent",
-                "generic:default",
-                "Service",
-                "BREACHED",
-                2,
-                1,
-                1,
-                ["Response time for ticket creation"],
-            ),
-        ]
+        # Load SLI data from JSON file
+        current_dir = os.path.dirname(__file__)
+        json_file_path = os.path.join(current_dir, "data", "sli_resp.json")
+
+        with open(json_file_path, 'r') as f:
+            sli_data = json.load(f)
+
+        # Generate services array from JSON data
+        services = []
+        for report in sli_data.get("Reports", []):
+            key_attrs = report["ReferenceId"]["KeyAttributes"]
+            name = key_attrs["Name"]
+            environment = key_attrs["Environment"]
+            service_type = key_attrs["Type"]
+            status = report["SliStatus"]
+            total_slo = report["TotalSloCount"]
+            ok_slo = report["OkSloCount"]
+            breached_slo = report["BreachedSloCount"]
+            breached_names = report["BreachedSloNames"]
+
+            services.append((
+                name,
+                environment,
+                service_type,
+                status,
+                total_slo,
+                ok_slo,
+                breached_slo,
+                breached_names
+            ))
 
         # Generate mock response
         reports = []
@@ -419,6 +383,8 @@ async def get_sli_status(hours: int = 4) -> str:
                     env = report["ReferenceId"]["KeyAttributes"]["Environment"]
 
                     result += f"• {name} ({env})\n"
+
+        print(f"final sli result: {result}")
 
         return result
 
