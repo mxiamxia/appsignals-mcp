@@ -1,16 +1,10 @@
 from datetime import datetime, timedelta
-import json
-import logging
 from typing import Any, List, Optional, Union
 from aws_clients import ApplicationSignalsClient, CloudWatchClient
 from mcp.server.fastmcp import FastMCP
 from typing import Dict
-from utils import SERVICE_STATUS, MAX_SERVICES
+from utils import logger, SERVICE_STATUS, MAX_SERVICES
 from tools import MAP_SERVICES_BY_STATUS
-
-
-_logger = logging.getLogger(__name__)
-_logger.setLevel(logging.ERROR)
 
 mcp = FastMCP(
     'aws-cw-appsignals-mcp-server',
@@ -59,7 +53,7 @@ def map_services_by_status(
                         result['unhealthy'].append(service_name)
     
     except Exception as e:
-        _logger.error(f'Failed to list services: {str(e)}')
+        logger.error(f'Failed to list services: {str(e)}')
         return str(e)
     
     return result
@@ -95,7 +89,7 @@ def _is_service_healthy(key_attributes, start_time, end_time):
     return True
 
 def main():
-    _logger.info('Starting up Application Signals MCP Server with stdio transport')
+    logger.info('Starting up Application Signals MCP Server with stdio transport')
     mcp.run()
 
 if __name__ == '__main__':

@@ -1,11 +1,6 @@
 import os
-import boto3
+from utils import logger
 import boto3.session
-import logging
-
-_logger = logging.getLogger(__name__)
-_logger.setLevel(logging.DEBUG)
-
 
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 AWS_PROFILE = os.environ.get('AWS_PROFILE', 'default')
@@ -20,9 +15,9 @@ class ApplicationSignalsClient:
 
         try:
             self.application_signals_client = session.client('application-signals', config=CONFIG)
-            _logger.debug(f'AWS Application Signals client initialized for region {AWS_REGION}')
+            logger.debug(f'AWS Application Signals client initialized for region {AWS_REGION}')
         except Exception as e:
-            _logger.error(f'Failed to initialize AWS Application Signals client: {str(e)}')
+            logger.error(f'Failed to initialize AWS Application Signals client: {str(e)}')
 
 
 class CloudWatchClient:
@@ -34,6 +29,6 @@ class CloudWatchClient:
 
         try:
             self.cloudwatch_client = session.client('cloudwatch', config=CONFIG)
-            _logger.debug(f'AWS CloudWatch client initialized for region {AWS_REGION}')
+            logger.debug(f'AWS CloudWatch client initialized for region {AWS_REGION}')
         except Exception as e:
-            _logger.error(f'Failed to initialize AWS CloudWatch client: {str(e)}')
+            logger.error(f'Failed to initialize AWS CloudWatch client: {str(e)}')
