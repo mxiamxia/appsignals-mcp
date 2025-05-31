@@ -1,0 +1,21 @@
+{
+    "mcpServers": {
+        "appsignals": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/PATH/TO/appsignals-mcp/aws-cw-appsignals-mcp-server",
+                "run",
+                "server.py"
+            ],
+            "env": {
+                "AWS_ACCESS_KEY_ID": "your-temporary-access-key",
+                "AWS_SECRET_ACCESS_KEY": "your-temporary-secret-key",
+                "AWS_SESSION_TOKEN": "your-session-token"
+                // "AWS_REGION": "us-east-1",
+                // "AWS_PROFILE": "511404824078"
+            }
+        }
+    }
+
+}

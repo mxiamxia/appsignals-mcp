@@ -1,8 +1,0 @@
-{
-    "mcpServers": {
-        "appsignals": {
-            "command": "uv",
-            "args": ["mcp-appsignals-server"]
-        }
-    }
-}
