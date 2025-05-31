@@ -1,14 +1,15 @@
-import datetime
+from datetime import datetime, timedelta
 import logging
-from typing import Any, List, Literal
+from typing import Any, List, Optional, Union
 from aws_clients import ApplicationSignalsClient
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 from typing import Dict
+from utils import SERVICE_STATUS, MAX_SERVICES
+from tools import MAP_SERVICES_BY_STATUS
+
 
 _logger = logging.getLogger(__name__)
-_logger.setLevel(logging.DEBUG)
-
-SERVICE_STATUS = ("healthy", "unhealthy")
+_logger.setLevel(logging.ERROR)
 
 mcp = FastMCP(
     'aws-cw-appsignals-mcp-server',
@@ -19,25 +20,27 @@ mcp = FastMCP(
 
 app_signals_client = ApplicationSignalsClient().application_signals_client
 
-@mcp.tool("map_services_by_status", "Puts each service on an AWS account to a bucket of healthy or unhealthy. If no input is given for the start and end date, will process services from the last 24 hours - if this is the case, please explain that you will process services from the last 24 hours")
+@mcp.tool(name=MAP_SERVICES_BY_STATUS['name'], description=MAP_SERVICES_BY_STATUS['description'])
 async def map_services_by_status(
-    start_date: datetime.datetime | None, 
-    end_date: datetime.datetime | None) -> Dict[str, List[Any]]:
+    start_date: Optional[datetime], 
+    end_date: Optional[datetime],
+    max_services: int = MAX_SERVICES) -> Union[Dict[str, List[Any]], str]:
     
-    """ services by status"""
+    """Categorizes services by status"""
 
     result = {status: [] for status in SERVICE_STATUS}
 
     if start_date is None:
-        start_date = datetime.datetime.now() - datetime.timedelta(days=1)
+        start_date = datetime.now() - timedelta(hours=24)
 
     if end_date is None:
-        end_date = datetime.datetime.now()
+        end_date = datetime.now()
     
     try:
         all_services: Dict[str, Any] = app_signals_client.list_services(
             StartTime=start_date,
-            EndTime=end_date
+            EndTime=end_date,
+            MaxResults=max_services
         )
 
         for service in all_services['ServiceSummaries']:
@@ -47,12 +50,15 @@ async def map_services_by_status(
 
             if is_service and service_name:
                 if _is_service_healthy(service_name):
-                    result['healthy'].append(service_name)
+                    if len(result['healthy']) < max_services:
+                        result['healthy'].append(service_name)
                 else:
-                    result['unhealthy'].append(service_name)
+                    if len(result['unhealthy']) < max_services:
+                        result['unhealthy'].append(service_name)
     
     except Exception as e:
         _logger.error(f'Failed to list services: {str(e)}')
+        return str(e)
     
     return result
 
