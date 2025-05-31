@@ -20,7 +20,7 @@ cw_client = CloudWatchClient().cloudwatch_client
 async def map_services_by_status(
     start_time: Optional[datetime], 
     end_time: Optional[datetime],
-    max_services: int = MAX_SERVICES) -> Union[Dict[str, List[Any]], str]:
+    max_services: Optional[int]) -> Union[Dict[str, List[Any]], str]:
     
     """Categorizes services by status"""
 
@@ -31,7 +31,10 @@ async def map_services_by_status(
 
     if end_time is None:
         end_time = datetime.now()
-    
+
+    if max_services is None:
+        max_services = MAX_SERVICES
+
     try:
         all_services: Dict[str, Any] = app_signals_client.list_services(
             StartTime=start_time,
@@ -46,11 +49,9 @@ async def map_services_by_status(
 
             if is_service and service_name:
                 if _is_service_healthy(service['KeyAttributes'], start_time, end_time):
-                    if len(result['healthy']) < max_services:
-                        result['healthy'].append(service_name)
+                    result['healthy'].append(service_name)
                 else:
-                    if len(result['unhealthy']) < max_services:
-                        result['unhealthy'].append(service_name)
+                    result['unhealthy'].append(service_name)
     
     except Exception as e:
         logger.error(f'Failed to list services: {str(e)}')
