@@ -24,24 +24,24 @@ cw_client = CloudWatchClient().cloudwatch_client
 
 @mcp.tool(name=MAP_SERVICES_BY_STATUS['name'], description=MAP_SERVICES_BY_STATUS['description'])
 def map_services_by_status(
-    start_date: Optional[datetime], 
-    end_date: Optional[datetime],
+    start_time: Optional[datetime], 
+    end_time: Optional[datetime],
     max_services: int = MAX_SERVICES) -> Union[Dict[str, List[Any]], str]:
     
     """Categorizes services by status"""
 
     result = {status: [] for status in SERVICE_STATUS}
 
-    if start_date is None:
-        start_date = datetime.now() - timedelta(hours=24)
+    if start_time is None:
+        start_time = datetime.now() - timedelta(hours=24)
 
-    if end_date is None:
-        end_date = datetime.now()
+    if end_time is None:
+        end_time = datetime.now()
     
     try:
         all_services: Dict[str, Any] = app_signals_client.list_services(
-            StartTime=start_date,
-            EndTime=end_date,
+            StartTime=start_time,
+            EndTime=end_time,
             MaxResults=max_services
         )
 
@@ -51,7 +51,7 @@ def map_services_by_status(
             service_name = service['KeyAttributes']['Name']  
 
             if is_service and service_name:
-                if _is_service_healthy(service['KeyAttributes'], start_date, end_date):
+                if _is_service_healthy(service['KeyAttributes'], start_time, end_time):
                     if len(result['healthy']) < max_services:
                         result['healthy'].append(service_name)
                 else:
