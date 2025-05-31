@@ -1,6 +1,8 @@
 import boto3
 from botocore.exceptions import ClientError
 from mcp.server.fastmcp import FastMCP
+from datetime import datetime, timedelta
+import random
 
 # Initialize FastMCP server
 mcp = FastMCP("appsignal")
@@ -291,6 +293,137 @@ async def get_service_metrics(
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+@mcp.tool()
+async def get_sli_status(hours: int = 4) -> str:
+    """Get SLI status for all services monitored by Application Signals.
+
+    Args:
+        hours: Number of hours to look back (default 4)
+    """
+    try:
+        # Calculate time range
+        end_time = datetime.utcnow().timestamp()
+        start_time = (datetime.utcnow() - timedelta(hours=hours)).timestamp()
+
+        # Define mock services with realistic SLI statuses
+        services = [
+            (
+                "pet-clinic-frontend-java",
+                "eks:demo/default",
+                "Service",
+                "BREACHED",
+                6,
+                4,
+                2,
+                ["Latency for Searching an Owner", "Availability for scheduling visits"],
+            ),
+            ("customers-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
+            ("vets-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
+            ("visits-service-java", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
+            (
+                "billing-service-python",
+                "eks:demo/default",
+                "Service",
+                "BREACHED",
+                1,
+                0,
+                1,
+                ["Latency of billing activities"],
+            ),
+            ("payment-service-dotnet", "eks:demo/default", "Service", "OK", 1, 1, 0, []),
+            ("nutrition-service-nodejs", "eks:demo/default", "Service", "INSUFFICIENT_DATA", 0, 0, 0, []),
+            ("admin-server-java", "eks:demo/default", "Service", "OK", 2, 2, 0, []),
+            ("discovery-server", "eks:demo/default", "Service", "OK", 1, 1, 0, []),
+            ("ai_booking_service", "ec2:demo/default", "Service", "OK", 3, 3, 0, []),
+            (
+                "ticketing-agent",
+                "generic:default",
+                "Service",
+                "BREACHED",
+                2,
+                1,
+                1,
+                ["Response time for ticket creation"],
+            ),
+        ]
+
+        # Generate mock response
+        reports = []
+        for service_info in services:
+            name, env, svc_type, status, total_slo, ok_slo, breached_slo, breached_names = service_info
+
+            report = {
+                "BreachedSloCount": breached_slo,
+                "BreachedSloNames": breached_names,
+                "EndTime": end_time,
+                "OkSloCount": ok_slo,
+                "ReferenceId": {"KeyAttributes": {"Environment": env, "Name": name, "Type": svc_type}},
+                "SliStatus": status,
+                "StartTime": start_time,
+                "TotalSloCount": total_slo,
+            }
+            reports.append(report)
+
+        # Build response
+        result = f"SLI Status Report - Last {hours} hours\n"
+        result += f"Time Range: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M')} - {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M')}\n\n"
+
+        # Count by status
+        status_counts = {
+            "OK": sum(1 for r in reports if r["SliStatus"] == "OK"),
+            "BREACHED": sum(1 for r in reports if r["SliStatus"] == "BREACHED"),
+            "INSUFFICIENT_DATA": sum(1 for r in reports if r["SliStatus"] == "INSUFFICIENT_DATA"),
+        }
+
+        result += "Summary:\n"
+        result += f"• Total Services: {len(reports)}\n"
+        result += f"• Healthy (OK): {status_counts['OK']}\n"
+        result += f"• Breached: {status_counts['BREACHED']}\n"
+        result += f"• Insufficient Data: {status_counts['INSUFFICIENT_DATA']}\n\n"
+
+        # Group by status
+        if status_counts["BREACHED"] > 0:
+            result += "⚠️  BREACHED SERVICES:\n"
+            for report in reports:
+                if report["SliStatus"] == "BREACHED":
+                    name = report["ReferenceId"]["KeyAttributes"]["Name"]
+                    env = report["ReferenceId"]["KeyAttributes"]["Environment"]
+                    breached_count = report["BreachedSloCount"]
+                    total_count = report["TotalSloCount"]
+                    breached_names = report["BreachedSloNames"]
+
+                    result += f"\n• {name} ({env})\n"
+                    result += f"  SLOs: {breached_count}/{total_count} breached\n"
+                    if breached_names:
+                        result += "  Breached SLOs:\n"
+                        for slo_name in breached_names:
+                            result += f"    - {slo_name}\n"
+
+        if status_counts["OK"] > 0:
+            result += "\n✅ HEALTHY SERVICES:\n"
+            for report in reports:
+                if report["SliStatus"] == "OK":
+                    name = report["ReferenceId"]["KeyAttributes"]["Name"]
+                    env = report["ReferenceId"]["KeyAttributes"]["Environment"]
+                    ok_count = report["OkSloCount"]
+
+                    result += f"• {name} ({env}) - {ok_count} SLO(s) healthy\n"
+
+        if status_counts["INSUFFICIENT_DATA"] > 0:
+            result += "\n❓ INSUFFICIENT DATA:\n"
+            for report in reports:
+                if report["SliStatus"] == "INSUFFICIENT_DATA":
+                    name = report["ReferenceId"]["KeyAttributes"]["Name"]
+                    env = report["ReferenceId"]["KeyAttributes"]["Environment"]
+
+                    result += f"• {name} ({env})\n"
+
+        return result
+
+    except Exception as e:
+        return f"Error getting SLI status: {str(e)}"
 
 
 if __name__ == "__main__":
