@@ -20,6 +20,7 @@ dependencies = [
     "boto3>=1.38.26",
     "httpx>=0.28.1",
     "mcp[cli]>=1.9.2",
+    "boto3>=1.38.26"
 ]
 
 [project.scripts]
