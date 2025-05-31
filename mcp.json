@@ -13,7 +13,7 @@
                 "AWS_SECRET_ACCESS_KEY": "your-temporary-secret-key",
                 "AWS_SESSION_TOKEN": "your-session-token"
                 // "AWS_REGION": "us-east-1",
-                // "AWS_PROFILE": "511404824078"
+                // "AWS_PROFILE": "your-aws-profile"
             }
         }
     }
