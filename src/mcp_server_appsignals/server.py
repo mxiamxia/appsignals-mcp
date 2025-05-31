@@ -5,9 +5,6 @@ from mcp.server.fastmcp import FastMCP
 # Initialize FastMCP server
 mcp = FastMCP("appsignal")
 
-NWS_API_BASE = "https://api.weather.gov"
-USER_AGENT = "weather-api/1.0"
-
 
 @mcp.tool()
 async def list_s3_buckets() -> str:

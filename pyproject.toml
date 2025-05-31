@@ -1,0 +1,56 @@
+[project]
+name = "mcp-server-appsignals"
+version = "0.1.0"
+description = "A Model Context Protocol server providing tools to interact with AWS Application Signals"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
+keywords = ["aws", "appsignals", "monitoring", "mcp", "llm"]
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "boto3>=1.38.26",
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.9.2",
+]
+
+[project.scripts]
+mcp-server-appsignals = "mcp_server_appsignals.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pyright>=1.1.389",
+    "ruff>=0.7.3",
+    "pytest>=8.0.0",
+    "moto>=5.0.0",  # For mocking AWS services in tests
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]  # Line too long
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
