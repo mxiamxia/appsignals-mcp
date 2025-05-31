@@ -17,7 +17,7 @@ app_signals_client = ApplicationSignalsClient().application_signals_client
 cw_client = CloudWatchClient().cloudwatch_client
 
 @mcp.tool(name=MAP_SERVICES_BY_STATUS['name'], description=MAP_SERVICES_BY_STATUS['description'])
-def map_services_by_status(
+async def map_services_by_status(
     start_time: Optional[datetime], 
     end_time: Optional[datetime],
     max_services: int = MAX_SERVICES) -> Union[Dict[str, List[Any]], str]:
