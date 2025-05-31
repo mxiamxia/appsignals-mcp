@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: appsignals
-Version: 0.1.0
-Summary: Add your description here
-Requires-Python: >=3.12
-Description-Content-Type: text/markdown
-Requires-Dist: boto3>=1.38.26
-Requires-Dist: httpx>=0.28.1
-Requires-Dist: mcp[cli]>=1.9.2

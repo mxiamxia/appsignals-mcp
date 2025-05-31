@@ -1,8 +1,0 @@
-README.md
-appsignals.py
-pyproject.toml
-appsignals.egg-info/PKG-INFO
-appsignals.egg-info/SOURCES.txt
-appsignals.egg-info/dependency_links.txt
-appsignals.egg-info/requires.txt
-appsignals.egg-info/top_level.txt
