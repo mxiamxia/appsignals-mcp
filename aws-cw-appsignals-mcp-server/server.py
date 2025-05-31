@@ -19,7 +19,7 @@ mcp = FastMCP(
 
 app_signals_client = ApplicationSignalsClient().application_signals_client
 
-@mcp.tool("map_services_by_status", "Puts each service on an AWS account to a bucket of healthy or unhealthy. If no input is given for the start and end date, will process services from the last 24 hours")
+@mcp.tool("map_services_by_status", "Puts each service on an AWS account to a bucket of healthy or unhealthy. If no input is given for the start and end date, will process services from the last 24 hours - if this is the case, please explain that you will process services from the last 24 hours")
 async def map_services_by_status(
     start_date: datetime.datetime | None, 
     end_date: datetime.datetime | None) -> Dict[str, List[Any]]:
