@@ -11,9 +11,10 @@
             "env": {
                 "AWS_ACCESS_KEY_ID": "your-temporary-access-key",
                 "AWS_SECRET_ACCESS_KEY": "your-temporary-secret-key",
-                "AWS_SESSION_TOKEN": "your-session-token"
+                "AWS_SESSION_TOKEN": "your-session-token",
                 // "AWS_REGION": "us-east-1",
                 // "AWS_PROFILE": "your-aws-profile"
+                "APPSIGNALS_MCP_LOG_LEVEL": "debug"
             }
         }
     }
