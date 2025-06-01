@@ -3,7 +3,7 @@ from typing import Any, List, Optional, Union
 from aws_clients import ApplicationSignalsClient, CloudWatchClient
 from mcp.server.fastmcp import FastMCP
 from typing import Dict
-from utils import logger, SERVICE_STATUS, MAX_SERVICES
+from utils import ServiceStatus, logger, MAX_SERVICES
 from tools import MAP_SERVICES_BY_STATUS
 
 mcp = FastMCP(
@@ -20,11 +20,11 @@ cw_client = CloudWatchClient().cloudwatch_client
 async def map_services_by_status(
     start_time: Optional[datetime], 
     end_time: Optional[datetime],
-    max_services: Optional[int]) -> Union[Dict[str, List[Any]], str]:
+    max_services: Optional[int]) -> Union[Dict[ServiceStatus, List[Any]], str]:
     
     """Categorizes services by status"""
 
-    result = {status: [] for status in SERVICE_STATUS}
+    result = {status: [] for status in ServiceStatus.values()}
 
     if start_time is None:
         start_time = datetime.now() - timedelta(hours=24)
@@ -48,10 +48,8 @@ async def map_services_by_status(
             service_name = service['KeyAttributes']['Name']  
 
             if is_service and service_name:
-                if _is_service_healthy(service['KeyAttributes'], start_time, end_time):
-                    result['healthy'].append(service_name)
-                else:
-                    result['unhealthy'].append(service_name)
+                health = _get_status_for_service(service['KeyAttributes'], start_time, end_time)
+                result[health].append(service_name)
     
     except Exception as e:
         logger.error(f'Failed to list services: {str(e)}')
@@ -59,7 +57,7 @@ async def map_services_by_status(
     
     return result
 
-def _is_service_healthy(key_attributes, start_time, end_time):
+def _get_status_for_service(key_attributes, start_time, end_time) -> ServiceStatus:
     slos = app_signals_client.list_service_level_objectives(
         KeyAttributes=key_attributes
     )
@@ -73,6 +71,7 @@ def _is_service_healthy(key_attributes, start_time, end_time):
         )
         slo = slo_response['Slo']
         goal = slo['Goal']['AttainmentGoal']
+        warning = slo['Goal']['WarningThreshold']
 
         if slo['EvaluationType'] == 'RequestBased':
             metric = slo['RequestBasedSli']['RequestBasedSliMetric']['MonitoredRequestCountMetric']['GoodCountMetric']
@@ -86,8 +85,8 @@ def _is_service_healthy(key_attributes, start_time, end_time):
                 values = result['Values']
                 for value in values:
                     if value < goal:
-                        return False
-    return True
+                        return ServiceStatus.UNHEALTHY
+    return ServiceStatus.HEALTHY
 
 def main():
     logger.info('Starting up Application Signals MCP Server with stdio transport')
