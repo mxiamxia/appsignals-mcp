@@ -2,49 +2,45 @@ import json
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-
-import boto3
+from aws_client import ApplicationSignalsClient, CloudWatchClient, XRayClient
 from botocore.exceptions import ClientError
 from mcp.server.fastmcp import FastMCP
 
-# Initialize FastMCP server
-mcp = FastMCP("appsignals")
+from tools import GET_SERVICE_DETAILS, LIST_APPLICATION_SIGNALS_SERVICES
 
-@mcp.tool()
+# Initialize FastMCP server
+mcp = FastMCP(
+    "appsignals",
+    dependencies=["boto3"],
+)
+
+
+appsignals_client = ApplicationSignalsClient().application_signals_client
+cw_client = CloudWatchClient().cloudwatch_client
+xray_client = XRayClient().xray_client
+
+@mcp.tool(name=LIST_APPLICATION_SIGNALS_SERVICES['name'], description=LIST_APPLICATION_SIGNALS_SERVICES['description'])
 async def list_application_signals_services() -> str:
     """List all services monitored by AWS Application Signals."""
     try:
-
-        appsignals = boto3.client("application-signals", region_name="us-east-1")
-
         # Calculate time range (last 24 hours)
-        end_time = datetime.utcnow()
+        end_time = datetime.now()
         start_time = end_time - timedelta(hours=24)
 
         # Get all services
-        response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        response = appsignals_client.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
         services = response.get("ServiceSummaries", [])
 
         if not services:
             return "No services found in Application Signals."
 
-        result = f"Application Signals Services ({len(services)} total):\n\n"
+        result = f"Found {len(services)} Application Signals Services:\n\n"
 
         for service in services:
             # Extract service name from KeyAttributes
             key_attrs = service.get("KeyAttributes", {})
-            service_name = key_attrs.get("Name", "Unknown")
-            service_type = key_attrs.get("Type", "Unknown")
 
-            result += f"• Service: {service_name}\n"
-            result += f"  Type: {service_type}\n"
-
-            # Add key attributes
-            if key_attrs:
-                result += "  Key Attributes:\n"
-                for key, value in key_attrs.items():
-                    result += f"    {key}: {value}\n"
-
+            result += json.dumps(key_attrs, indent=2)
             result += "\n"
 
         return result
@@ -54,85 +50,49 @@ async def list_application_signals_services() -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
-
-@mcp.tool()
-async def get_service_details(service_name: str) -> str:
+@mcp.tool(name=GET_SERVICE_DETAILS['name'], description=GET_SERVICE_DETAILS['description'])
+async def get_service_details(key_attrs: dict) -> str:
     """Get detailed information about a specific Application Signals service.
 
     Args:
-        service_name: Name of the service to get details for
+        key_attrs: Name of the service to get details for
     """
     try:
-
-        appsignals = boto3.client("application-signals", region_name="us-east-1")
-
-        # Calculate time range (last 24 hours)
-        end_time = datetime.utcnow()
+        end_time = datetime.now()
         start_time = end_time - timedelta(hours=24)
 
-        # First, get all services to find the one we want
-        services_response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        service_response = appsignals_client.get_service(KeyAttributes=key_attrs, StartTime=start_time, EndTime=end_time)
+        service = service_response.get("Service", None)
 
-        # Find the service with matching name
-        target_service = None
-        for service in services_response.get("ServiceSummaries", []):
-            key_attrs = service.get("KeyAttributes", {})
-            if key_attrs.get("Name") == service_name:
-                target_service = service
-                break
-
-        if not target_service:
-            return f"Service '{service_name}' not found in Application Signals."
-
-        # Get detailed service information
-        service_response = appsignals.get_service(
-            StartTime=start_time, EndTime=end_time, KeyAttributes=target_service["KeyAttributes"]
-        )
-
-        service_details = service_response["Service"]
-
-        # Build detailed response
-        result = f"Service Details: {service_name}\n\n"
+        if not service:
+            return f"No details found for service: {key_attrs}"
+        
+        result = f"Service Details:\n\n"
 
         # Key Attributes
-        key_attrs = service_details.get("KeyAttributes", {})
+        key_attrs = service.get("KeyAttributes", {})
         if key_attrs:
             result += "Key Attributes:\n"
-            for key, value in key_attrs.items():
-                result += f"  {key}: {value}\n"
-            result += "\n"
-
+            result += json.dumps(key_attrs, indent=2) + "\n\n"
+        
         # Attribute Maps (Platform, Application, Telemetry info)
-        attr_maps = service_details.get("AttributeMaps", [])
+        attr_maps = service.get("AttributeMaps", [])
         if attr_maps:
             result += "Additional Attributes:\n"
-            for attr_map in attr_maps:
-                for key, value in attr_map.items():
-                    result += f"  {key}: {value}\n"
+            result += json.dumps(attr_maps, indent=2) + "\n\n"
             result += "\n"
 
         # Metric References
-        metric_refs = service_details.get("MetricReferences", [])
+        metric_refs = service.get("MetricReferences", [])
         if metric_refs:
             result += f"Metric References ({len(metric_refs)} total):\n"
-            for metric in metric_refs:
-                result += f"  • {metric.get('Namespace', '')}/{metric.get('MetricName', '')}\n"
-                result += f"    Type: {metric.get('MetricType', '')}\n"
-                dimensions = metric.get("Dimensions", [])
-                if dimensions:
-                    result += "    Dimensions: "
-                    dim_strs = [f"{d['Name']}={d['Value']}" for d in dimensions]
-                    result += ", ".join(dim_strs) + "\n"
-                result += "\n"
+            result += json.dumps(metric_refs, indent=2) + "\n\n"
 
         # Log Group References
-        log_refs = service_details.get("LogGroupReferences", [])
+        log_refs = service.get("LogGroupReferences", [])
         if log_refs:
             result += f"Log Group References ({len(log_refs)} total):\n"
-            for log_ref in log_refs:
-                log_group = log_ref.get("Identifier", "Unknown")
-                result += f"  • {log_group}\n"
-            result += "\n"
+            result += json.dumps(log_refs, indent=2) + "\n\n"
 
         return result
 
@@ -157,15 +117,12 @@ async def get_service_metrics(
     """
     try:
 
-        appsignals = boto3.client("application-signals", region_name="us-east-1")
-        cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
-
         # Calculate time range
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=hours)
 
         # Get service details to find metrics
-        services_response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        services_response = appsignals_client.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
 
         # Find the target service
         target_service = None
@@ -179,7 +136,7 @@ async def get_service_metrics(
             return f"Service '{service_name}' not found in Application Signals."
 
         # Get detailed service info for metric references
-        service_response = appsignals.get_service(
+        service_response = appsignals_client.get_service(
             StartTime=start_time, EndTime=end_time, KeyAttributes=target_service["KeyAttributes"]
         )
 
@@ -218,7 +175,7 @@ async def get_service_metrics(
             period = 3600  # 1 hour
 
         # Get both standard and extended statistics in a single call
-        response = cloudwatch.get_metric_statistics(
+        response = cw_client.get_metric_statistics(
             Namespace=target_metric["Namespace"],
             MetricName=target_metric["MetricName"],
             Dimensions=target_metric.get("Dimensions", []),
@@ -435,9 +392,7 @@ async def query_xray_traces(
     Returns:
         JSON string containing up to 10 trace summaries
     """
-    try:
-        xray_client = boto3.client('xray', region_name=region)
-        
+    try:        
         # Default to past 3 hours if times not provided
         if not end_time:
             end_datetime = datetime.utcnow()
