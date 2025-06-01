@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -143,14 +144,15 @@ async def get_service_details(service_name: str) -> str:
 
 @mcp.tool()
 async def get_service_metrics(
-    service_name: str, metric_name: str = None, statistic: str = "Average", hours: int = 1
+    service_name: str, metric_name: str, statistic: str = "Average", extended_statistic: str = "p99", hours: int = 1
 ) -> str:
     """Get CloudWatch metrics for a specific Application Signals service.
 
     Args:
         service_name: Name of the service to get metrics for
         metric_name: Specific metric name (optional - if not provided, shows available metrics)
-        statistic: Statistic type (Average, Sum, Maximum, Minimum, SampleCount) or extended statistic (p99, p95, etc). Defaults to Average.
+        statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount). Defaults to Average.
+        extended_statistic: Extended statistic (p99, p95, p90, etc). Defaults to p99.
         hours: Number of hours to look back (default 1)
     """
     try:
@@ -215,7 +217,7 @@ async def get_service_metrics(
         else:
             period = 3600  # 1 hour
 
-        # Get metric statistics
+        # Get both standard and extended statistics in a single call
         response = cloudwatch.get_metric_statistics(
             Namespace=target_metric["Namespace"],
             MetricName=target_metric["MetricName"],
@@ -224,6 +226,7 @@ async def get_service_metrics(
             EndTime=end_time,
             Period=period,
             Statistics=[statistic],
+            ExtendedStatistics=[extended_statistic]
         )
 
         datapoints = response.get("Datapoints", [])
@@ -237,30 +240,53 @@ async def get_service_metrics(
         # Build response
         result = f"Metrics for {service_name} - {metric_name}\n"
         result += f"Time Range: Last {hours} hour(s)\n"
-        result += f"Statistic: {statistic}\n"
         result += f"Period: {period} seconds\n\n"
 
-        # Calculate summary statistics
-        values = [dp[statistic] for dp in datapoints]
-        avg_value = sum(values) / len(values)
-        max_value = max(values)
-        min_value = min(values)
-        latest_value = datapoints[-1][statistic]
+        # Calculate summary statistics for both standard and extended statistics
+        standard_values = [dp.get(statistic) for dp in datapoints if dp.get(statistic) is not None]
+        extended_values = [dp.get(extended_statistic) for dp in datapoints if dp.get(extended_statistic) is not None]
 
         result += "Summary:\n"
-        result += f"• Latest: {latest_value:.2f}\n"
-        result += f"• Average: {avg_value:.2f}\n"
-        result += f"• Maximum: {max_value:.2f}\n"
-        result += f"• Minimum: {min_value:.2f}\n"
+        
+        if standard_values:
+            latest_standard = datapoints[-1].get(statistic)
+            avg_of_standard = sum(standard_values) / len(standard_values)
+            max_standard = max(standard_values)
+            min_standard = min(standard_values)
+            
+            result += f"{statistic} Statistics:\n"
+            result += f"• Latest: {latest_standard:.2f}\n"
+            result += f"• Average: {avg_of_standard:.2f}\n"
+            result += f"• Maximum: {max_standard:.2f}\n"
+            result += f"• Minimum: {min_standard:.2f}\n\n"
+        
+        if extended_values:
+            latest_extended = datapoints[-1].get(extended_statistic)
+            avg_extended = sum(extended_values) / len(extended_values)
+            max_extended = max(extended_values)
+            min_extended = min(extended_values)
+            
+            result += f"{extended_statistic} Statistics:\n"
+            result += f"• Latest: {latest_extended:.2f}\n"
+            result += f"• Average: {avg_extended:.2f}\n"
+            result += f"• Maximum: {max_extended:.2f}\n"
+            result += f"• Minimum: {min_extended:.2f}\n\n"
+
         result += f"• Data Points: {len(datapoints)}\n\n"
 
-        # Show recent values (last 10)
+        # Show recent values (last 10) with both metrics
         result += "Recent Values:\n"
         for dp in datapoints[-10:]:
             timestamp = dp["Timestamp"].strftime("%m/%d %H:%M")
-            value = dp[statistic]
             unit = dp.get("Unit", "")
-            result += f"• {timestamp}: {value:.2f} {unit}\n"
+            
+            values_str = []
+            if dp.get(statistic) is not None:
+                values_str.append(f"{statistic}: {dp[statistic]:.2f}")
+            if dp.get(extended_statistic) is not None:
+                values_str.append(f"{extended_statistic}: {dp[extended_statistic]:.2f}")
+            
+            result += f"• {timestamp}: {', '.join(values_str)} {unit}\n"
 
         return result
 
@@ -384,12 +410,92 @@ async def get_sli_status(hours: int = 24) -> str:
 
                     result += f"• {name} ({env})\n"
 
-        print(f"final sli result: {result}")
-
         return result
 
     except Exception as e:
         return f"Error getting SLI status: {str(e)}"
+    
+
+@mcp.tool()
+async def query_xray_traces(
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    filter_expression: Optional[str] = None,
+    region: str = "us-east-1"
+) -> str:
+    """
+    Query X-Ray traces.
+    
+    Args:
+        start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago if not provided.
+        end_time: End time in ISO format (e.g., '2024-01-01T01:00:00Z'). Defaults to current time if not provided.
+        filter_expression: X-Ray filter expression (optional)
+        region: AWS region (default: us-east-1)
+    
+    Returns:
+        JSON string containing up to 10 trace summaries
+    """
+    try:
+        xray_client = boto3.client('xray', region_name=region)
+        
+        # Default to past 3 hours if times not provided
+        if not end_time:
+            end_datetime = datetime.utcnow()
+        else:
+            end_datetime = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            
+        if not start_time:
+            start_datetime = end_datetime - timedelta(hours=3)
+        else:
+            start_datetime = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+        
+        kwargs = {
+            'StartTime': start_datetime,
+            'EndTime': end_datetime,
+            'Sampling': True
+        }
+        
+        if filter_expression:
+            kwargs['FilterExpression'] = filter_expression
+        
+        response = xray_client.get_trace_summaries(**kwargs)
+        
+        # Convert response to JSON-serializable format
+        def convert_datetime(obj):
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return obj
+        
+        trace_summaries = []
+        for trace in response.get('TraceSummaries', []):
+            trace_data = {
+                'Id': trace.get('Id'),
+                'Duration': trace.get('Duration'),
+                'ResponseTime': trace.get('ResponseTime'),
+                'HasError': trace.get('HasError'),
+                'HasFault': trace.get('HasFault'),
+                'HasThrottle': trace.get('HasThrottle'),
+                'Http': trace.get('Http', {}),
+                'Annotations': trace.get('Annotations', {}),
+                'Users': trace.get('Users', []),
+                'ServiceIds': trace.get('ServiceIds', [])
+            }
+            # Convert any datetime objects to ISO format strings
+            for key, value in trace_data.items():
+                trace_data[key] = convert_datetime(value)
+            trace_summaries.append(trace_data)
+        
+        result_data = {
+            'TraceSummaries': trace_summaries,
+            'ApproximateTime': convert_datetime(response.get('ApproximateTime')),
+            'TracesReceivedCount': response.get('TracesReceivedCount'),
+            'TracesProcessedCount': response.get('TracesProcessedCount')
+        }
+        
+        return json.dumps(result_data, indent=2)
+        
+    except Exception as e:
+        return json.dumps({'error': str(e)}, indent=2)
 
 
 if __name__ == "__main__":
