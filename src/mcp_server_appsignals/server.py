@@ -13,7 +13,20 @@ mcp = FastMCP("appsignals")
 
 @mcp.tool()
 async def list_application_signals_services() -> str:
-    """List all services monitored by AWS Application Signals."""
+    """List all services monitored by AWS Application Signals.
+
+    Use this tool to:
+    - Get an overview of all monitored services
+    - See service names, types, and key attributes
+    - Identify which services are being tracked
+    - Count total number of services in your environment
+
+    Returns a formatted list showing:
+    - Service name and type
+    - Key attributes (Environment, Platform, etc.)
+    - Total count of services
+
+    This is typically the first tool to use when starting monitoring or investigation."""
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
@@ -59,8 +72,23 @@ async def list_application_signals_services() -> str:
 async def get_service_details(service_name: str) -> str:
     """Get detailed information about a specific Application Signals service.
 
+    Use this tool when you need to:
+    - Understand a service's configuration and setup
+    - See what metrics are available for a service
+    - Find log groups associated with the service
+    - Get service metadata and attributes
+
+    Returns comprehensive details including:
+    - Key attributes (Type, Environment, Platform)
+    - Available CloudWatch metrics with namespaces
+    - Metric dimensions and types
+    - Associated log groups for debugging
+
+    This tool is essential before querying specific metrics, as it shows
+    which metrics are available for the service.
+
     Args:
-        service_name: Name of the service to get details for
+        service_name: Name of the service to get details for (case-sensitive)
     """
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
@@ -147,12 +175,34 @@ async def get_service_metrics(
 ) -> str:
     """Get CloudWatch metrics for a specific Application Signals service.
 
+    Use this tool to:
+    - Analyze service performance (latency, throughput)
+    - Check error rates and reliability
+    - View trends over time
+    - Get both standard statistics (Average, Max) and percentiles (p99, p95)
+
+    Common metric names:
+    - 'Latency': Response time in milliseconds
+    - 'ErrorRate': Percentage of failed requests
+    - 'FaultRate': Percentage of server errors (5xx)
+    - 'RequestCount': Number of requests
+
+    Returns:
+    - Summary statistics (latest, average, min, max)
+    - Recent data points with timestamps
+    - Both standard and percentile values when available
+
+    The tool automatically adjusts the granularity based on time range:
+    - Up to 3 hours: 1-minute resolution
+    - Up to 24 hours: 5-minute resolution
+    - Over 24 hours: 1-hour resolution
+
     Args:
         service_name: Name of the service to get metrics for
-        metric_name: Specific metric name (optional - if not provided, shows available metrics)
-        statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount). Defaults to Average.
-        extended_statistic: Extended statistic (p99, p95, p90, etc). Defaults to p99.
-        hours: Number of hours to look back (default 1)
+        metric_name: Specific metric name (if empty, lists available metrics)
+        statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount)
+        extended_statistic: Extended statistic (p99, p95, p90, p50, etc)
+        hours: Number of hours to look back (default 1, max 168 for 1 week)
     """
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
@@ -296,10 +346,36 @@ async def get_service_metrics(
 
 @mcp.tool()
 async def get_sli_status(hours: int = 24) -> str:
-    """Get SLI status for all services monitored by Application Signals.
+    """Get SLI (Service Level Indicator) status and SLO compliance for all services.
+
+    Use this tool to:
+    - Check overall system health at a glance
+    - Identify services with breached SLOs (Service Level Objectives)
+    - See which specific SLOs are failing
+    - Prioritize which services need immediate attention
+    - Monitor SLO compliance trends
+
+    Returns a comprehensive report showing:
+    - Summary counts (total, healthy, breached, insufficient data)
+    - Detailed list of breached services with:
+      - Service name and environment
+      - Number and names of breached SLOs
+      - Specific SLO violations
+    - List of healthy services
+    - Services with insufficient data
+
+    This is the primary tool for health monitoring and should be used:
+    - At the start of each day
+    - During incident response
+    - For regular health checks
+
+    Status meanings:
+    - OK: All SLOs are being met
+    - BREACHED: One or more SLOs are violated
+    - INSUFFICIENT_DATA: Not enough data to determine status
 
     Args:
-        hours: Number of hours to look back (default 24)
+        hours: Number of hours to look back (default 24, typically use 24 for daily checks)
     """
     try:
         # Calculate new time range
@@ -412,17 +488,44 @@ async def query_xray_traces(
     filter_expression: Optional[str] = None,
     region: str = "us-east-1",
 ) -> str:
-    """
-    Query X-Ray traces.
+    """Query AWS X-Ray traces to investigate errors, performance issues, and request flows.
+
+    Use this tool to:
+    - Find root causes of errors and faults
+    - Analyze request latency and identify bottlenecks
+    - Trace requests across multiple services
+    - Debug timeout and dependency issues
+    - Understand service-to-service interactions
+
+    Common filter expressions:
+    - 'error = true': Find all traces with errors
+    - 'fault = true': Find all traces with faults (5xx errors)
+    - 'service("service-name")': Filter by specific service
+    - 'duration > 5': Find slow requests (over 5 seconds)
+    - 'http.status = 500': Find specific HTTP status codes
+    - Combine with AND/OR: 'service("api") AND (error = true OR fault = true)'
+
+    Returns JSON with trace summaries including:
+    - Trace ID for detailed investigation
+    - Duration and response time
+    - Error/fault/throttle status
+    - HTTP information (method, status, URL)
+    - Service interactions
+    - User information if available
+
+    Best practices:
+    - Start with recent time windows (last 1-3 hours)
+    - Use filter expressions to narrow down issues
+    - Look for patterns in errors or slow requests
 
     Args:
-        start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago if not provided.
-        end_time: End time in ISO format (e.g., '2024-01-01T01:00:00Z'). Defaults to current time if not provided.
-        filter_expression: X-Ray filter expression (optional)
+        start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago
+        end_time: End time in ISO format (e.g., '2024-01-01T01:00:00Z'). Defaults to current time
+        filter_expression: X-Ray filter expression to narrow results (see examples above)
         region: AWS region (default: us-east-1)
 
     Returns:
-        JSON string containing up to 10 trace summaries
+        JSON string containing trace summaries with error status, duration, and service details
     """
     try:
         xray_client = boto3.client("xray", region_name=region)
