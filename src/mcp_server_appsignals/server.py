@@ -10,11 +10,24 @@ from mcp.server.fastmcp import FastMCP
 # Initialize FastMCP server
 mcp = FastMCP("appsignals")
 
+
 @mcp.tool()
 async def list_application_signals_services() -> str:
-    """List all services monitored by AWS Application Signals."""
-    try:
+    """List all services monitored by AWS Application Signals.
 
+    Use this tool to:
+    - Get an overview of all monitored services
+    - See service names, types, and key attributes
+    - Identify which services are being tracked
+    - Count total number of services in your environment
+
+    Returns a formatted list showing:
+    - Service name and type
+    - Key attributes (Environment, Platform, etc.)
+    - Total count of services
+
+    This is typically the first tool to use when starting monitoring or investigation."""
+    try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
         # Calculate time range (last 24 hours)
@@ -59,11 +72,25 @@ async def list_application_signals_services() -> str:
 async def get_service_details(service_name: str) -> str:
     """Get detailed information about a specific Application Signals service.
 
+    Use this tool when you need to:
+    - Understand a service's configuration and setup
+    - See what metrics are available for a service
+    - Find log groups associated with the service
+    - Get service metadata and attributes
+
+    Returns comprehensive details including:
+    - Key attributes (Type, Environment, Platform)
+    - Available CloudWatch metrics with namespaces
+    - Metric dimensions and types
+    - Associated log groups for debugging
+
+    This tool is essential before querying specific metrics, as it shows
+    which metrics are available for the service.
+
     Args:
-        service_name: Name of the service to get details for
+        service_name: Name of the service to get details for (case-sensitive)
     """
     try:
-
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
         # Calculate time range (last 24 hours)
@@ -148,15 +175,36 @@ async def get_service_metrics(
 ) -> str:
     """Get CloudWatch metrics for a specific Application Signals service.
 
+    Use this tool to:
+    - Analyze service performance (latency, throughput)
+    - Check error rates and reliability
+    - View trends over time
+    - Get both standard statistics (Average, Max) and percentiles (p99, p95)
+
+    Common metric names:
+    - 'Latency': Response time in milliseconds
+    - 'ErrorRate': Percentage of failed requests
+    - 'FaultRate': Percentage of server errors (5xx)
+    - 'RequestCount': Number of requests
+
+    Returns:
+    - Summary statistics (latest, average, min, max)
+    - Recent data points with timestamps
+    - Both standard and percentile values when available
+
+    The tool automatically adjusts the granularity based on time range:
+    - Up to 3 hours: 1-minute resolution
+    - Up to 24 hours: 5-minute resolution
+    - Over 24 hours: 1-hour resolution
+
     Args:
         service_name: Name of the service to get metrics for
-        metric_name: Specific metric name (optional - if not provided, shows available metrics)
-        statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount). Defaults to Average.
-        extended_statistic: Extended statistic (p99, p95, p90, etc). Defaults to p99.
-        hours: Number of hours to look back (default 1)
+        metric_name: Specific metric name (if empty, lists available metrics)
+        statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount)
+        extended_statistic: Extended statistic (p99, p95, p90, p50, etc)
+        hours: Number of hours to look back (default 1, max 168 for 1 week)
     """
     try:
-
         appsignals = boto3.client("application-signals", region_name="us-east-1")
         cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
 
@@ -226,7 +274,7 @@ async def get_service_metrics(
             EndTime=end_time,
             Period=period,
             Statistics=[statistic],
-            ExtendedStatistics=[extended_statistic]
+            ExtendedStatistics=[extended_statistic],
         )
 
         datapoints = response.get("Datapoints", [])
@@ -247,25 +295,25 @@ async def get_service_metrics(
         extended_values = [dp.get(extended_statistic) for dp in datapoints if dp.get(extended_statistic) is not None]
 
         result += "Summary:\n"
-        
+
         if standard_values:
             latest_standard = datapoints[-1].get(statistic)
             avg_of_standard = sum(standard_values) / len(standard_values)
             max_standard = max(standard_values)
             min_standard = min(standard_values)
-            
+
             result += f"{statistic} Statistics:\n"
             result += f"• Latest: {latest_standard:.2f}\n"
             result += f"• Average: {avg_of_standard:.2f}\n"
             result += f"• Maximum: {max_standard:.2f}\n"
             result += f"• Minimum: {min_standard:.2f}\n\n"
-        
+
         if extended_values:
             latest_extended = datapoints[-1].get(extended_statistic)
             avg_extended = sum(extended_values) / len(extended_values)
             max_extended = max(extended_values)
             min_extended = min(extended_values)
-            
+
             result += f"{extended_statistic} Statistics:\n"
             result += f"• Latest: {latest_extended:.2f}\n"
             result += f"• Average: {avg_extended:.2f}\n"
@@ -279,13 +327,13 @@ async def get_service_metrics(
         for dp in datapoints[-10:]:
             timestamp = dp["Timestamp"].strftime("%m/%d %H:%M")
             unit = dp.get("Unit", "")
-            
+
             values_str = []
             if dp.get(statistic) is not None:
                 values_str.append(f"{statistic}: {dp[statistic]:.2f}")
             if dp.get(extended_statistic) is not None:
                 values_str.append(f"{extended_statistic}: {dp[extended_statistic]:.2f}")
-            
+
             result += f"• {timestamp}: {', '.join(values_str)} {unit}\n"
 
         return result
@@ -298,10 +346,36 @@ async def get_service_metrics(
 
 @mcp.tool()
 async def get_sli_status(hours: int = 24) -> str:
-    """Get SLI status for all services monitored by Application Signals.
+    """Get SLI (Service Level Indicator) status and SLO compliance for all services.
+
+    Use this tool to:
+    - Check overall system health at a glance
+    - Identify services with breached SLOs (Service Level Objectives)
+    - See which specific SLOs are failing
+    - Prioritize which services need immediate attention
+    - Monitor SLO compliance trends
+
+    Returns a comprehensive report showing:
+    - Summary counts (total, healthy, breached, insufficient data)
+    - Detailed list of breached services with:
+      - Service name and environment
+      - Number and names of breached SLOs
+      - Specific SLO violations
+    - List of healthy services
+    - Services with insufficient data
+
+    This is the primary tool for health monitoring and should be used:
+    - At the start of each day
+    - During incident response
+    - For regular health checks
+
+    Status meanings:
+    - OK: All SLOs are being met
+    - BREACHED: One or more SLOs are violated
+    - INSUFFICIENT_DATA: Not enough data to determine status
 
     Args:
-        hours: Number of hours to look back (default 24)
+        hours: Number of hours to look back (default 24, typically use 24 for daily checks)
     """
     try:
         # Calculate new time range
@@ -312,7 +386,7 @@ async def get_sli_status(hours: int = 24) -> str:
         current_dir = os.path.dirname(__file__)
         json_file_path = os.path.join(current_dir, "data", "sli_resp.json")
 
-        with open(json_file_path, 'r') as f:
+        with open(json_file_path, "r") as f:
             sli_data = json.load(f)
 
         # Generate services array from JSON data
@@ -328,16 +402,7 @@ async def get_sli_status(hours: int = 24) -> str:
             breached_slo = report["BreachedSloCount"]
             breached_names = report["BreachedSloNames"]
 
-            services.append((
-                name,
-                environment,
-                service_type,
-                status,
-                total_slo,
-                ok_slo,
-                breached_slo,
-                breached_names
-            ))
+            services.append((name, environment, service_type, status, total_slo, ok_slo, breached_slo, breached_names))
 
         # Generate mock response
         reports = []
@@ -414,88 +479,172 @@ async def get_sli_status(hours: int = 24) -> str:
 
     except Exception as e:
         return f"Error getting SLI status: {str(e)}"
-    
+
 
 @mcp.tool()
 async def query_xray_traces(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     filter_expression: Optional[str] = None,
-    region: str = "us-east-1"
+    region: str = "us-east-1",
 ) -> str:
-    """
-    Query X-Ray traces.
-    
+    """Query AWS X-Ray traces to investigate errors, performance issues, and request flows.
+
+    Use this tool to:
+    - Find root causes of errors and faults
+    - Analyze request latency and identify bottlenecks
+    - Trace requests across multiple services
+    - Debug timeout and dependency issues
+    - Understand service-to-service interactions
+
+    Common filter expressions:
+    - 'error = true': Find all traces with errors
+    - 'fault = true': Find all traces with faults (5xx errors)
+    - 'service("service-name")': Filter by specific service
+    - 'duration > 5': Find slow requests (over 5 seconds)
+    - 'http.status = 500': Find specific HTTP status codes
+    - Combine with AND/OR: 'service("api") AND (error = true OR fault = true)'
+
+    Returns JSON with trace summaries including:
+    - Trace ID for detailed investigation
+    - Duration and response time
+    - Error/fault/throttle status
+    - HTTP information (method, status, URL)
+    - Service interactions
+    - User information if available
+
+    Best practices:
+    - Start with recent time windows (last 1-3 hours)
+    - Use filter expressions to narrow down issues
+    - Look for patterns in errors or slow requests
+
     Args:
-        start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago if not provided.
-        end_time: End time in ISO format (e.g., '2024-01-01T01:00:00Z'). Defaults to current time if not provided.
-        filter_expression: X-Ray filter expression (optional)
+        start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago
+        end_time: End time in ISO format (e.g., '2024-01-01T01:00:00Z'). Defaults to current time
+        filter_expression: X-Ray filter expression to narrow results (see examples above)
         region: AWS region (default: us-east-1)
-    
+
     Returns:
-        JSON string containing up to 10 trace summaries
+        JSON string containing trace summaries with error status, duration, and service details
     """
     try:
-        xray_client = boto3.client('xray', region_name=region)
-        
+        xray_client = boto3.client("xray", region_name=region)
+
         # Default to past 3 hours if times not provided
         if not end_time:
             end_datetime = datetime.utcnow()
         else:
-            end_datetime = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-            
+            end_datetime = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+
         if not start_time:
             start_datetime = end_datetime - timedelta(hours=3)
         else:
-            start_datetime = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-        
-        kwargs = {
-            'StartTime': start_datetime,
-            'EndTime': end_datetime,
-            'Sampling': True
-        }
-        
+            start_datetime = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+
+        kwargs = {"StartTime": start_datetime, "EndTime": end_datetime, "Sampling": True}
+
         if filter_expression:
-            kwargs['FilterExpression'] = filter_expression
-        
+            kwargs["FilterExpression"] = filter_expression
+
         response = xray_client.get_trace_summaries(**kwargs)
-        
+
         # Convert response to JSON-serializable format
         def convert_datetime(obj):
             if isinstance(obj, datetime):
                 return obj.isoformat()
             return obj
-        
+
         trace_summaries = []
-        for trace in response.get('TraceSummaries', []):
+        for trace in response.get("TraceSummaries", []):
             trace_data = {
-                'Id': trace.get('Id'),
-                'Duration': trace.get('Duration'),
-                'ResponseTime': trace.get('ResponseTime'),
-                'HasError': trace.get('HasError'),
-                'HasFault': trace.get('HasFault'),
-                'HasThrottle': trace.get('HasThrottle'),
-                'Http': trace.get('Http', {}),
-                'Annotations': trace.get('Annotations', {}),
-                'Users': trace.get('Users', []),
-                'ServiceIds': trace.get('ServiceIds', [])
+                "Id": trace.get("Id"),
+                "Duration": trace.get("Duration"),
+                "ResponseTime": trace.get("ResponseTime"),
+                "HasError": trace.get("HasError"),
+                "HasFault": trace.get("HasFault"),
+                "HasThrottle": trace.get("HasThrottle"),
+                "Http": trace.get("Http", {}),
+                "Annotations": trace.get("Annotations", {}),
+                "Users": trace.get("Users", []),
+                "ServiceIds": trace.get("ServiceIds", []),
             }
             # Convert any datetime objects to ISO format strings
             for key, value in trace_data.items():
                 trace_data[key] = convert_datetime(value)
             trace_summaries.append(trace_data)
-        
+
         result_data = {
-            'TraceSummaries': trace_summaries,
-            'ApproximateTime': convert_datetime(response.get('ApproximateTime')),
-            'TracesReceivedCount': response.get('TracesReceivedCount'),
-            'TracesProcessedCount': response.get('TracesProcessedCount')
+            "TraceSummaries": trace_summaries,
+            "ApproximateTime": convert_datetime(response.get("ApproximateTime")),
+            "TracesReceivedCount": response.get("TracesReceivedCount"),
+            "TracesProcessedCount": response.get("TracesProcessedCount"),
         }
-        
+
         return json.dumps(result_data, indent=2)
-        
+
     except Exception as e:
-        return json.dumps({'error': str(e)}, indent=2)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# Prompts for guiding LLM behavior with Application Signals
+@mcp.prompt(
+    name="daily_health_check", description="Generate a comprehensive daily health report for all monitored services"
+)
+def generate_daily_report() -> str:
+    """Generate a daily health check report for all services."""
+    return """I'll generate a comprehensive daily health check report for your Application Signals services:
+
+**Report Sections:**
+1. **Executive Dashboard**
+   - Overall system health score
+   - Total services monitored
+   - SLO compliance percentage
+
+2. **Service Status Summary**
+   - ✅ Healthy services
+   - ⚠️ Warning: Services approaching thresholds
+   - ❌ Critical: Services with breached SLOs
+
+3. **Key Metrics Overview**
+   - System-wide request volume
+   - Average latency trends
+   - Error rate summary
+
+4. **Top Issues**
+   - Most critical problems
+   - Services requiring immediate attention
+
+5. **Recommendations**
+   - Preventive actions
+   - Optimization opportunities
+
+Starting with get_sli_status() and list_application_signals_services()..."""
+
+
+@mcp.prompt()
+def troubleshoot_service(service_name: str) -> str:
+    """Troubleshoot issues with a specific service.
+
+    Args:
+        service_name: Name of the service to troubleshoot
+    """
+    return f"""I'll help you troubleshoot the '{service_name}' service. Here's my systematic approach:
+
+1. **Service Configuration**: Check service details and attributes
+2. **SLI/SLO Status**: Review recent compliance and breaches
+3. **Key Metrics Analysis**: 
+   - Latency (Average and p99)
+   - Error rates
+   - Request counts
+4. **Trace Analysis**: Examine X-Ray traces for errors
+5. **Root Cause & Recommendations**: Identify issues and suggest fixes
+
+I'll use these tools in sequence:
+- get_service_details("{service_name}")
+- get_sli_status() - focusing on {service_name}
+- get_service_metrics("{service_name}", "Latency", hours=24)
+- get_service_metrics("{service_name}", "ErrorRate", hours=24)
+- query_xray_traces(filter_expression="service(\\"{service_name}\\") AND (error = true OR fault = true)")"""
 
 
 if __name__ == "__main__":
