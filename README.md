@@ -21,7 +21,7 @@ Add this configuration to your Claude Desktop settings:
 {
   "mcpServers": {
     "appsignals": {
-      "command": "<absolute path to uvx>",
+      "command": "uvx",
       "args": [
         "--from",
         "git+https://github.com/mxiamxia/appsignals-mcp.git",
@@ -43,7 +43,7 @@ Add this configuration to your Claude Desktop settings:
    {
      "mcpServers": {
        "appsignals": {
-         "command": "<absolute path to uv>",
+         "command": "uv",
          "args": [
            "--directory",
            "/path/to/appsignals-mcp",
