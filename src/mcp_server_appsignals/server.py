@@ -183,9 +183,8 @@ async def get_service_metrics(
 
     Common metric names:
     - 'Latency': Response time in milliseconds
-    - 'ErrorRate': Percentage of failed requests
-    - 'FaultRate': Percentage of server errors (5xx)
-    - 'RequestCount': Number of requests
+    - 'Error': Percentage of failed requests
+    - 'Fault': Percentage of server errors (5xx)
 
     Returns:
     - Summary statistics (latest, average, min, max)
@@ -374,6 +373,10 @@ async def get_sli_status(hours: int = 24) -> str:
     - BREACHED: One or more SLOs are violated
     - INSUFFICIENT_DATA: Not enough data to determine status
 
+    Next Steps are to root cause the issues for unhealthy services with following steps:
+    - call get_service_details by the service name in unhealthy and find the MetricReferences for breached SLO 
+    - Use the SLO metric dimentions as indexed attributes to query X-Ray traces
+
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
     """
@@ -490,7 +493,7 @@ async def query_xray_traces(
 ) -> str:
     """Query AWS X-Ray traces to investigate errors, performance issues, and request flows.
 
-    Use this tool to:
+    What this tool potentially can do?:
     - Find root causes of errors and faults
     - Analyze request latency and identify bottlenecks
     - Trace requests across multiple services
@@ -512,11 +515,12 @@ async def query_xray_traces(
     - HTTP information (method, status, URL)
     - Service interactions
     - User information if available
+    - Exception root causes (ErrorRootCauses, FaultRootCauses, ResponseTimeRootCauses)
 
     Best practices:
     - Start with recent time windows (last 1-3 hours)
-    - Use filter expressions to narrow down issues
-    - Look for patterns in errors or slow requests
+    - Use filter expressions to narrow down issues and query Fault and Error traces for high priority
+    - Look for patterns in errors or very slow requests
 
     Args:
         start_time: Start time in ISO format (e.g., '2024-01-01T00:00:00Z'). Defaults to 3 hours ago
@@ -567,6 +571,9 @@ async def query_xray_traces(
                 "Annotations": trace.get("Annotations", {}),
                 "Users": trace.get("Users", []),
                 "ServiceIds": trace.get("ServiceIds", []),
+                "ErrorRootCauses": trace.get("ErrorRootCauses", []),
+                "FaultRootCauses": trace.get("FaultRootCauses", []),
+                "ResponseTimeRootCauses": trace.get("ResponseTimeRootCauses", []),
             }
             # Convert any datetime objects to ISO format strings
             for key, value in trace_data.items():
