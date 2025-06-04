@@ -55,6 +55,29 @@ Add this configuration to your Claude Desktop settings:
    }
    ```
 
+#### Amazon Q Integration
+Amazon Q integration is similiar to Claude Desktop setup. You will just have to 
+add the following to your `~/.aws/amazonq/mcp.json` file:
+```
+{
+    "mcpServers": {
+        "appsignals": {
+            "command": "uvx",
+            "args": [
+                "--from",
+                "git+https://github.com/mxiamxia/appsignals-mcp.git",
+                "mcp-server-appsignals"
+            ],
+            "env": {
+                "AWS_ACCESS_KEY_ID": "<aws_access_key>",
+                "AWS_SECRET_ACCESS_KEY": "<aws_secret_access_key>",
+            },
+            "timeout": 60000
+        }
+    }
+}
+```
+
 ### Available Tools
 
 This server provides tools to interact with AWS Application Signals:
