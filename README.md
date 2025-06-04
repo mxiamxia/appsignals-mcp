@@ -56,8 +56,9 @@ Add this configuration to your Claude Desktop settings:
    ```
 
 #### Amazon Q Integration
-Amazon Q integration is similiar to Claude Desktop setup. You will just have to 
-add the following to your `~/.aws/amazonq/mcp.json` file:
+Amazon Q integration is similiar to Claude Desktop setup. First to install 
+[Amazon Q Developer](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html) 
+and you will just add the following to your `~/.aws/amazonq/mcp.json` file:
 ```
 {
     "mcpServers": {
