@@ -381,9 +381,9 @@ async def investigate_slo_breach(
         metric_type = None
         if "Latency" in slo_name:
             metric_type = "Latency"
-        elif "Availability" in slo_name or "Error" in slo_name:
+        elif "Error" in slo_name:
             metric_type = "Error"
-        elif "Fault" in slo_name:
+        elif "Availability" in slo_name or "Fault" in slo_name:
             metric_type = "Fault"
 
         # Find metrics that could be related to this SLO
@@ -412,7 +412,7 @@ async def investigate_slo_breach(
                 if operation:
                     # Build X-Ray filter
                     filter_expr = f'service("{service_name}")'
-                    filter_expr += f' AND annotation.Operation="{operation}"'
+                    filter_expr += f' AND annotation.aws.local.operation="{operation}"'
                     filter_expr += " AND (error = true OR fault = true)"
 
                     result += f"    - Checking traces for operation: {operation}\n"
@@ -646,12 +646,14 @@ async def query_xray_traces(
 ) -> str:
     """Query AWS X-Ray traces to investigate errors, performance issues, and request flows.
 
-    What this tool potentially can do?:
+    Use this tool to:
     - Find root causes of errors and faults
     - Analyze request latency and identify bottlenecks
-    - Trace requests across multiple services
+    - Understand the requests across multiple services with traces
     - Debug timeout and dependency issues
     - Understand service-to-service interactions
+    - Find customer impact from trace result such as Users data or trace attributes such as owner id
+
 
     Common filter expressions:
     - 'error = true': Find all traces with errors
@@ -659,8 +661,8 @@ async def query_xray_traces(
     - 'service("service-name")': Filter by specific service
     - 'duration > 5': Find slow requests (over 5 seconds)
     - 'http.status = 500': Find specific HTTP status codes
-    - 'annotation.Operation="GET /owners/*/lastname"': Filter by specific operation (from metric dimensions)
-    - 'annotation.RemoteOperation="ListOwners"': Filter by remote operation name
+    - 'annotation.aws.local.operation="GET /owners/*/lastname"': Filter by specific operation (from metric dimensions)
+    - 'annotation.aws.remote.operation="ListOwners"': Filter by remote operation name
     - Combine with AND/OR: 'service("api") AND annotation.Operation="POST /visits" AND (error = true OR fault = true)'
 
     IMPORTANT: When investigating SLO breaches, use annotation filters with the specific dimension values
