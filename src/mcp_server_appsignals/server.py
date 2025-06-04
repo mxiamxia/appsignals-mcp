@@ -343,8 +343,135 @@ async def get_service_metrics(
         return f"Error: {str(e)}"
 
 
+async def investigate_slo_breach(
+    service_name: str, environment: str, slo_name: str, start_time: float, end_time: float
+) -> str:
+    """Investigate a specific SLO breach by analyzing metrics and traces."""
+    result = f"\n  • Analyzing SLO: {slo_name}\n"
+
+    try:
+        appsignals = boto3.client("application-signals", region_name="us-east-1")
+
+        # Get service details to find metric references
+        services_response = appsignals.list_services(
+            StartTime=datetime.fromtimestamp(start_time), EndTime=datetime.fromtimestamp(end_time), MaxResults=100
+        )
+
+        # Find the target service
+        target_service = None
+        for service in services_response.get("ServiceSummaries", []):
+            key_attrs = service.get("KeyAttributes", {})
+            if key_attrs.get("Name") == service_name and key_attrs.get("Environment") == environment:
+                target_service = service
+                break
+
+        if not target_service:
+            return result + "    - Could not find service details\n"
+
+        # Get detailed service info
+        service_response = appsignals.get_service(
+            StartTime=datetime.fromtimestamp(start_time),
+            EndTime=datetime.fromtimestamp(end_time),
+            KeyAttributes=target_service["KeyAttributes"],
+        )
+
+        metric_refs = service_response["Service"].get("MetricReferences", [])
+
+        # Extract metric type from SLO name
+        metric_type = None
+        if "Latency" in slo_name:
+            metric_type = "Latency"
+        elif "Availability" in slo_name or "Error" in slo_name:
+            metric_type = "Error"
+        elif "Fault" in slo_name:
+            metric_type = "Fault"
+
+        # Find metrics that could be related to this SLO
+        relevant_metrics = []
+        for metric in metric_refs:
+            if metric_type and metric.get("MetricName") == metric_type:
+                dimensions = metric.get("Dimensions", [])
+                for dim in dimensions:
+                    if dim.get("Name") == "Operation":
+                        operation = dim.get("Value", "")
+                        # Try to match operation with SLO name
+                        if any(part.lower() in slo_name.lower() for part in operation.split("/")):
+                            relevant_metrics.append(metric)
+                            break
+
+        # Query X-Ray traces for these specific operations
+        if relevant_metrics:
+            for metric in relevant_metrics:
+                dimensions = metric.get("Dimensions", [])
+                operation = None
+                for dim in dimensions:
+                    if dim.get("Name") == "Operation":
+                        operation = dim.get("Value")
+                        break
+
+                if operation:
+                    # Build X-Ray filter
+                    filter_expr = f'service("{service_name}")'
+                    filter_expr += f' AND annotation.Operation="{operation}"'
+                    filter_expr += " AND (error = true OR fault = true)"
+
+                    result += f"    - Checking traces for operation: {operation}\n"
+
+                    # Query X-Ray
+                    xray_client = boto3.client("xray", region_name="us-east-1")
+                    trace_end = datetime.utcnow()
+                    trace_start = trace_end - timedelta(hours=3)
+
+                    trace_response = xray_client.get_trace_summaries(
+                        StartTime=trace_start, EndTime=trace_end, FilterExpression=filter_expr, Sampling=True
+                    )
+
+                    traces = trace_response.get("TraceSummaries", [])
+                    if traces:
+                        result += f"      Found {len(traces)} error/fault traces\n"
+
+                        # Analyze root causes
+                        error_causes = {}
+                        fault_causes = {}
+
+                        for trace in traces[:5]:  # Analyze first 5 traces
+                            # Collect error root causes
+                            for cause in trace.get("ErrorRootCauses", []):
+                                for service in cause.get("Services", []):
+                                    for exception in service.get("Exceptions", []):
+                                        msg = exception.get("Message", "Unknown error")
+                                        error_causes[msg] = error_causes.get(msg, 0) + 1
+
+                            # Collect fault root causes
+                            for cause in trace.get("FaultRootCauses", []):
+                                for service in cause.get("Services", []):
+                                    for exception in service.get("Exceptions", []):
+                                        msg = exception.get("Message", "Unknown fault")
+                                        fault_causes[msg] = fault_causes.get(msg, 0) + 1
+
+                        # Report top causes
+                        if error_causes:
+                            result += "      Top error causes:\n"
+                            for cause, count in sorted(error_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
+                                result += f"        - {cause} ({count} occurrences)\n"
+
+                        if fault_causes:
+                            result += "      Top fault causes:\n"
+                            for cause, count in sorted(fault_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
+                                result += f"        - {cause} ({count} occurrences)\n"
+                    else:
+                        result += "      No error/fault traces found in the last 3 hours\n"
+        else:
+            result += "Could not find specific metrics for this SLO\n"
+
+    except Exception as e:
+        result += f"    - Error during investigation: {str(e)}\n"
+
+    return result
+
+
 @mcp.tool()
-async def get_sli_status(hours: int = 24) -> str:
+async def get_sli_status(hours: int = 24, auto_investigate: bool = True) -> str:
     """Get SLI (Service Level Indicator) status and SLO compliance for all services.
 
     Use this tool to:
@@ -353,6 +480,7 @@ async def get_sli_status(hours: int = 24) -> str:
     - See which specific SLOs are failing
     - Prioritize which services need immediate attention
     - Monitor SLO compliance trends
+    - Automatically investigate root causes of SLO breaches (when auto_investigate=True)
 
     Returns a comprehensive report showing:
     - Summary counts (total, healthy, breached, insufficient data)
@@ -362,23 +490,30 @@ async def get_sli_status(hours: int = 24) -> str:
       - Specific SLO violations
     - List of healthy services
     - Services with insufficient data
+    - Root cause analysis for breached SLOs (when auto_investigate=True)
 
     This is the primary tool for health monitoring and should be used:
     - At the start of each day
     - During incident response
     - For regular health checks
+    - When investigating "what is the root cause of breaching SLO" questions
 
     Status meanings:
     - OK: All SLOs are being met
     - BREACHED: One or more SLOs are violated
     - INSUFFICIENT_DATA: Not enough data to determine status
 
-    Next Steps are to root cause the issues for unhealthy services with following steps:
-    - call get_service_details by the service name in unhealthy and find the MetricReferences for breached SLO 
-    - Use the SLO metric dimentions as indexed attributes to query X-Ray traces
+    When auto_investigate is True, the tool will automatically:
+    1. Call get_service_details() for breached services
+    2. Find metrics matching the breached SLO names
+    3. Extract metric dimensions (Operation, RemoteOperation, etc.)
+    4. Query X-Ray traces for those specific operations
+    5. Analyze error/fault root causes
+    6. Include findings in the report
 
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
+        auto_investigate: Whether to automatically investigate root causes of breaches (default True)
     """
     try:
         # Calculate new time range
@@ -478,6 +613,24 @@ async def get_sli_status(hours: int = 24) -> str:
 
                     result += f"• {name} ({env})\n"
 
+        # Automatically investigate root causes if requested and there are breaches
+        if auto_investigate and status_counts["BREACHED"] > 0:
+            result += "\n📊 ROOT CAUSE ANALYSIS:\n"
+            result += "=" * 50 + "\n"
+
+            for report in reports:
+                if report["SliStatus"] == "BREACHED":
+                    name = report["ReferenceId"]["KeyAttributes"]["Name"]
+                    env = report["ReferenceId"]["KeyAttributes"]["Environment"]
+                    breached_names = report["BreachedSloNames"]
+
+                    result += f"\n🔍 Investigating {name} ({env}):\n"
+
+                    # Investigate each breached SLO
+                    for slo_name in breached_names:
+                        investigation = await investigate_slo_breach(name, env, slo_name, start_time, end_time)
+                        result += investigation
+
         return result
 
     except Exception as e:
@@ -506,7 +659,12 @@ async def query_xray_traces(
     - 'service("service-name")': Filter by specific service
     - 'duration > 5': Find slow requests (over 5 seconds)
     - 'http.status = 500': Find specific HTTP status codes
-    - Combine with AND/OR: 'service("api") AND (error = true OR fault = true)'
+    - 'annotation.Operation="GET /owners/*/lastname"': Filter by specific operation (from metric dimensions)
+    - 'annotation.RemoteOperation="ListOwners"': Filter by remote operation name
+    - Combine with AND/OR: 'service("api") AND annotation.Operation="POST /visits" AND (error = true OR fault = true)'
+
+    IMPORTANT: When investigating SLO breaches, use annotation filters with the specific dimension values
+    from the breached metric (e.g., Operation, RemoteOperation) to find traces for that exact operation.
 
     Returns JSON with trace summaries including:
     - Trace ID for detailed investigation
@@ -639,7 +797,7 @@ def troubleshoot_service(service_name: str) -> str:
 
 1. **Service Configuration**: Check service details and attributes
 2. **SLI/SLO Status**: Review recent compliance and breaches
-3. **Key Metrics Analysis**: 
+3. **Key Metrics Analysis**:
    - Latency (Average and p99)
    - Error rates
    - Request counts
@@ -651,7 +809,14 @@ I'll use these tools in sequence:
 - get_sli_status() - focusing on {service_name}
 - get_service_metrics("{service_name}", "Latency", hours=24)
 - get_service_metrics("{service_name}", "ErrorRate", hours=24)
-- query_xray_traces(filter_expression="service(\\"{service_name}\\") AND (error = true OR fault = true)")"""
+
+For X-Ray trace analysis:
+- If SLOs are breached: I'll use the specific metric dimensions from the breached SLO
+  (e.g., 'service("{service_name}") AND annotation.Operation="specific-operation" AND (error = true OR fault = true)')
+- If no specific SLO breach: I'll use a general error search
+  (e.g., 'service("{service_name}") AND (error = true OR fault = true)')
+
+This ensures I investigate the exact operations causing issues, not just any random errors."""
 
 
 if __name__ == "__main__":
