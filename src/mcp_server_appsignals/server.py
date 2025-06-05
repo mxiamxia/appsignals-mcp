@@ -1078,7 +1078,7 @@ async def get_sli_status(hours: int = 24, auto_investigate: bool = True) -> str:
     1. Call get_service_details() for breached services
     2. Find metrics matching the breached SLO names
     3. Extract metric dimensions (Operation, RemoteOperation, etc.)
-    4. Query X-Ray traces for those specific operations
+    4. Query X-Ray traces for those specific operations for the recent 3 hours time window. Max query window length should be less than 6 hours
     5. Analyze error/fault root causes
     6. Include findings in the report
 
