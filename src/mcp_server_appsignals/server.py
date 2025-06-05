@@ -1073,12 +1073,13 @@ async def get_sli_status(hours: int = 24, auto_investigate: bool = True) -> str:
     - BREACHED: One or more SLOs are violated
     - INSUFFICIENT_DATA: Not enough data to determine status
 
-    When auto_investigate is True, the tool will automatically:
+    When auto_investigate is True, The next steps LLM should follow are:
     1. Call get_service_level_objective() with SLO name to get the detailed SLI data including Metric statatics
     2. Find the fault metrics from SLI under the breached SLO
     3. Use metric dimensions from MetricStats (Operation, RemoteOperation, etc.) to build X-Ray query filters, for example:
         - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
         - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
+    4. The X-Ray query time window should be default to last 3 hours if not specified. Max query time window length is 6 hours
     5. Analyze the root causes from Exception data in trace
     6. Include findings in the report and give the fix and mitigation suggestions.
 
@@ -1275,7 +1276,7 @@ async def query_xray_traces(
         else:
             start_datetime = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
 
-        kwargs = {"StartTime": start_datetime, "EndTime": end_datetime, "Sampling": True}
+        kwargs = {"StartTime": start_datetime, "EndTime": end_datetime, "TimeRangeType": "Service", "Sampling": True}
 
         if filter_expression:
             kwargs["FilterExpression"] = filter_expression
@@ -1321,127 +1322,6 @@ async def query_xray_traces(
 
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
-
-
-# Prompts for guiding LLM behavior with Application Signals
-@mcp.prompt(
-    name="daily_health_check", description="Generate a comprehensive daily health report for all monitored services"
-)
-def generate_daily_report() -> str:
-    """Generate a daily health check report for all services."""
-    return """I'll generate a comprehensive daily health check report for your Application Signals services:
-
-**Report Sections:**
-1. **Executive Dashboard**
-   - Overall system health score
-   - Total services monitored
-   - SLO compliance percentage
-
-2. **Service Status Summary**
-   - ✅ Healthy services
-   - ⚠️ Warning: Services approaching thresholds
-   - ❌ Critical: Services with breached SLOs
-
-3. **Key Metrics Overview**
-   - System-wide request volume
-   - Average latency trends
-   - Error rate summary
-
-4. **Top Issues**
-   - Most critical problems
-   - Services requiring immediate attention
-
-5. **Recommendations**
-   - Preventive actions
-   - Optimization opportunities
-
-Starting with get_sli_status() and list_application_signals_services()..."""
-
-
-@mcp.prompt()
-def troubleshoot_service(service_name: str) -> str:
-    """Troubleshoot issues with a specific service.
-
-    Args:
-        service_name: Name of the service to troubleshoot
-    """
-    return f"""I'll help you troubleshoot the '{service_name}' service. Here's my systematic approach:
-
-1. **Service Configuration**: Check service details and attributes
-2. **SLI/SLO Status**: Review recent compliance and breaches
-3. **Key Metrics Analysis**:
-   - Latency (Average and p99)
-   - Error rates
-   - Request counts
-4. **Trace Analysis**: Examine X-Ray traces for errors
-5. **Root Cause & Recommendations**: Identify issues and suggest fixes
-
-I'll use these tools in sequence:
-- get_service_details("{service_name}")
-- get_sli_status() - focusing on {service_name}
-- get_service_metrics("{service_name}", "Latency", hours=24)
-- get_service_metrics("{service_name}", "ErrorRate", hours=24)
-
-For X-Ray trace analysis:
-- If SLOs are breached: I'll use the specific metric dimensions from the breached SLO
-  (e.g., 'service("{service_name}"){{fault = true}} AND annotation[aws.local.operation]="specific-operation"')
-- If no specific SLO breach: I'll use a general error search
-  (e.g., 'service("{service_name}"){{fault = true}}')
-
-This ensures I investigate the exact operations causing issues, not just any random errors."""
-
-
-@mcp.prompt(
-    name="investigate_slo_breach", description="Comprehensive workflow to investigate and root cause SLO breaches"
-)
-def investigate_slo_breach_workflow() -> str:
-    """Guide for investigating SLO breaches using the enhanced workflow."""
-    return """I'll help you investigate SLO breaches using our enhanced workflow. Here's my systematic approach:
-
-**Enhanced Investigation Workflow:**
-
-1. **Check SLI Status** (`get_sli_status`)
-   - Identify which services have breached SLOs
-   - Get the names of specific breached SLOs
-   - See the health status overview
-
-2. **Get SLO Details** (`get_service_level_objective`)
-   - For each breached SLO, get the following data from SliMetric:
-     - Operation name (e.g., "POST /api/visits")
-     - Metric type (LATENCY or AVAILABILITY)
-     - MetricDataQueries dimensions (Operation, RemoteOperation, etc.)
-     - Threshold values
-     - Key attributes (service, environment, etc.)
-     - Dependency configurations if any
-
-3. **Query Targeted Traces** (`query_xray_traces`)
-   - Use the exact operation name and dimensions from SLI MetricStat
-   - Build precise X-Ray filters, for example:
-     - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
-     - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
-   - Query window should be default to 3 hours and less than 6 hours
-
-4. **Deep Trace Analysis** 
-   - The investigation will automatically perform DEEP TRACE ANALYSIS
-   - This goes beyond just root cause summaries and examines:
-     - ALL exceptions in the trace segments (not just the first one)
-     - Downstream service issues and exceptions
-     - Hidden errors like DynamoDB throttling that might not appear in root causes
-
-5. **Provide Actionable Insights**
-   - ALL exceptions found (including those deep in the trace)
-   - Downstream service failures
-   - Specific error messages and types
-   - Frequency of each error type
-   - Sample trace IDs for further investigation
-
-This workflow ensures we:
-- Investigate the exact operations that are breaching SLOs
-- Look DEEP into traces to find ALL exceptions, not just surface-level errors
-- Identify the TRUE root causes that might be hidden in downstream services
-- Give the suggestion to the fixes and mitigation options
-
-Let me start the investigation..."""
 
 
 if __name__ == "__main__":
