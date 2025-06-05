@@ -352,6 +352,172 @@ async def investigate_slo_breach(
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
 
+        # Step 1: Get detailed SLO configuration using the new API
+        result += "    - Fetching SLO configuration details\n"
+        try:
+            slo_response = appsignals.get_service_level_objective(Id=slo_name)
+            slo = slo_response.get("Slo", {})
+
+            # Extract operation name and key attributes from SLO configuration
+            operation_name = None
+            metric_type = None
+            service_key_attrs = {}
+            dependency_operation = None
+            dependency_attrs = {}
+
+            # Check period-based SLI
+            if "Sli" in slo:
+                sli_metric = slo["Sli"].get("SliMetric", {})
+                operation_name = sli_metric.get("OperationName")
+                metric_type = sli_metric.get("MetricType")
+                service_key_attrs = sli_metric.get("KeyAttributes", {})
+
+                # Get dependency info if available
+                dep_config = sli_metric.get("DependencyConfig", {})
+                if dep_config:
+                    dependency_operation = dep_config.get("DependencyOperationName")
+                    dependency_attrs = dep_config.get("DependencyKeyAttributes", {})
+
+            # Check request-based SLI
+            elif "RequestBasedSli" in slo:
+                rbs_metric = slo["RequestBasedSli"].get("RequestBasedSliMetric", {})
+                operation_name = rbs_metric.get("OperationName")
+                metric_type = rbs_metric.get("MetricType")
+                service_key_attrs = rbs_metric.get("KeyAttributes", {})
+
+                # Get dependency info if available
+                dep_config = rbs_metric.get("DependencyConfig", {})
+                if dep_config:
+                    dependency_operation = dep_config.get("DependencyOperationName")
+                    dependency_attrs = dep_config.get("DependencyKeyAttributes", {})
+
+            if operation_name:
+                result += f"    - SLO monitors operation: {operation_name}\n"
+                result += f"    - Metric type: {metric_type}\n"
+
+                # Step 2: Build X-Ray filter based on SLO configuration
+                # Build service filter with fault/error based on metric type
+                if metric_type == "AVAILABILITY":
+                    filter_expr = f'service("{service_name}"){{fault = true}}'
+                else:
+                    filter_expr = f'service("{service_name}")'
+
+                # Add operation filter
+                filter_expr += f' AND annotation[aws.local.operation]="{operation_name}"'
+
+                # Add duration filter for latency SLOs
+                if metric_type == "LATENCY":
+                    # For latency SLOs, look for slow traces
+                    threshold = slo.get("Sli", {}).get("MetricThreshold") or slo.get("RequestBasedSli", {}).get(
+                        "MetricThreshold"
+                    )
+                    if threshold and threshold > 0:
+                        # Convert threshold from milliseconds to seconds for X-Ray
+                        filter_expr += f" AND duration > {threshold / 1000}"
+                    else:
+                        # Default to traces over 5 seconds
+                        filter_expr += " AND duration > 5"
+
+                result += f"    - Using X-Ray filter: {filter_expr}\n"
+
+                # Step 3: Query X-Ray traces
+                xray_client = boto3.client("xray", region_name="us-east-1")
+                trace_end = datetime.utcnow()
+                trace_start = trace_end - timedelta(hours=3)
+
+                trace_response = xray_client.get_trace_summaries(
+                    StartTime=trace_start, EndTime=trace_end, FilterExpression=filter_expr, Sampling=True
+                )
+
+                traces = trace_response.get("TraceSummaries", [])
+                if traces:
+                    result += f"      Found {len(traces)} relevant traces\n"
+
+                    # Analyze root causes
+                    error_causes = {}
+                    fault_causes = {}
+                    response_time_issues = {}
+
+                    for trace in traces[:10]:  # Analyze first 10 traces
+                        # Collect error root causes
+                        for cause in trace.get("ErrorRootCauses", []):
+                            for service in cause.get("Services", []):
+                                for exception in service.get("Exceptions", []):
+                                    msg = exception.get("Message", "Unknown error")
+                                    error_causes[msg] = error_causes.get(msg, 0) + 1
+
+                        # Collect fault root causes
+                        for cause in trace.get("FaultRootCauses", []):
+                            for service in cause.get("Services", []):
+                                for exception in service.get("Exceptions", []):
+                                    msg = exception.get("Message", "Unknown fault")
+                                    fault_causes[msg] = fault_causes.get(msg, 0) + 1
+
+                        # Collect response time root causes (for latency SLOs)
+                        if metric_type == "LATENCY":
+                            for cause in trace.get("ResponseTimeRootCauses", []):
+                                for service in cause.get("Services", []):
+                                    svc_name = service.get("Name", "Unknown service")
+                                    response_time_issues[svc_name] = response_time_issues.get(svc_name, 0) + 1
+
+                    # Report top causes
+                    if error_causes:
+                        result += "      Top error causes:\n"
+                        for cause, count in sorted(error_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
+                            result += f"        - {cause} ({count} occurrences)\n"
+
+                    if fault_causes:
+                        result += "      Top fault causes:\n"
+                        for cause, count in sorted(fault_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
+                            result += f"        - {cause} ({count} occurrences)\n"
+
+                    if response_time_issues and metric_type == "LATENCY":
+                        result += "      Services causing latency issues:\n"
+                        for svc, count in sorted(response_time_issues.items(), key=lambda x: x[1], reverse=True)[:3]:
+                            result += f"        - {svc} ({count} slow traces)\n"
+
+                    # Check for dependency issues if configured
+                    if dependency_operation:
+                        result += f"      \n      Checking dependency operation: {dependency_operation}\n"
+                        dep_filter = f'service("*"){{fault = true}} AND annotation[aws.remote.operation]="{dependency_operation}"'
+
+                        dep_trace_response = xray_client.get_trace_summaries(
+                            StartTime=trace_start, EndTime=trace_end, FilterExpression=dep_filter, Sampling=True
+                        )
+
+                        dep_traces = dep_trace_response.get("TraceSummaries", [])
+                        if dep_traces:
+                            result += f"        Found {len(dep_traces)} error traces in dependency\n"
+                else:
+                    result += "      No error/fault traces found in the last 3 hours\n"
+            else:
+                result += "    - Could not extract operation name from SLO configuration\n"
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                result += f"    - SLO '{slo_name}' not found, falling back to metric-based investigation\n"
+                # Fall back to the original investigation method
+                return result + await investigate_slo_breach_fallback(
+                    service_name, environment, slo_name, start_time, end_time
+                )
+            else:
+                raise
+
+    except Exception as e:
+        result += f"    - Error during investigation: {str(e)}\n"
+
+    return result
+
+
+async def investigate_slo_breach_fallback(
+    service_name: str, environment: str, slo_name: str, start_time: float, end_time: float
+) -> str:
+    """Fallback investigation method using metric references."""
+    result = ""
+
+    try:
+        appsignals = boto3.client("application-signals", region_name="us-east-1")
+
         # Get service details to find metric references
         services_response = appsignals.list_services(
             StartTime=datetime.fromtimestamp(start_time), EndTime=datetime.fromtimestamp(end_time), MaxResults=100
@@ -411,9 +577,8 @@ async def investigate_slo_breach(
 
                 if operation:
                     # Build X-Ray filter
-                    filter_expr = f'service("{service_name}")'
-                    filter_expr += f' AND annotation.aws.local.operation="{operation}"'
-                    filter_expr += " AND (error = true OR fault = true)"
+                    filter_expr = f'service("{service_name}"){{fault = true}}'
+                    filter_expr += f' AND annotation[aws.local.operation]="{operation}"'
 
                     result += f"    - Checking traces for operation: {operation}\n"
 
@@ -462,12 +627,164 @@ async def investigate_slo_breach(
                     else:
                         result += "      No error/fault traces found in the last 3 hours\n"
         else:
-            result += "Could not find specific metrics for this SLO\n"
+            result += "    - Could not find specific metrics for this SLO\n"
 
     except Exception as e:
-        result += f"    - Error during investigation: {str(e)}\n"
+        result += f"    - Error during fallback investigation: {str(e)}\n"
 
     return result
+
+
+@mcp.tool()
+async def get_service_level_objective(slo_id: str) -> str:
+    """Get detailed information about a specific Service Level Objective (SLO).
+
+    Use this tool to:
+    - Get comprehensive SLO configuration details
+    - Understand what metrics the SLO monitors
+    - See threshold values and comparison operators
+    - Extract operation names and key attributes for trace queries
+    - Identify dependency configurations
+    - Review attainment goals and burn rate settings
+
+    Returns detailed information including:
+    - SLO name, description, and metadata
+    - Metric configuration (for period-based or request-based SLOs)
+    - Key attributes and operation names
+    - Metric type (LATENCY or AVAILABILITY)
+    - Threshold values and comparison operators
+    - Goal configuration (attainment percentage, time interval)
+    - Burn rate configurations
+
+    This tool is essential for:
+    - Understanding why an SLO was breached
+    - Getting the exact operation name to query traces
+    - Identifying the metrics and thresholds being monitored
+    - Planning remediation based on SLO configuration
+
+    Args:
+        slo_id: The ARN or name of the SLO to retrieve
+    """
+    try:
+        appsignals = boto3.client("application-signals", region_name="us-east-1")
+
+        response = appsignals.get_service_level_objective(Id=slo_id)
+        slo = response.get("Slo", {})
+
+        if not slo:
+            return f"No SLO found with ID: {slo_id}"
+
+        result = f"Service Level Objective Details\n"
+        result += "=" * 50 + "\n\n"
+
+        # Basic info
+        result += f"Name: {slo.get('Name', 'Unknown')}\n"
+        result += f"ARN: {slo.get('Arn', 'Unknown')}\n"
+        if slo.get("Description"):
+            result += f"Description: {slo['Description']}\n"
+        result += f"Evaluation Type: {slo.get('EvaluationType', 'Unknown')}\n"
+        result += f"Created: {slo.get('CreatedTime', 'Unknown')}\n"
+        result += f"Last Updated: {slo.get('LastUpdatedTime', 'Unknown')}\n\n"
+
+        # Goal configuration
+        goal = slo.get("Goal", {})
+        if goal:
+            result += "Goal Configuration:\n"
+            result += f"• Attainment Goal: {goal.get('AttainmentGoal', 99)}%\n"
+            result += f"• Warning Threshold: {goal.get('WarningThreshold', 50)}%\n"
+
+            interval = goal.get("Interval", {})
+            if "RollingInterval" in interval:
+                rolling = interval["RollingInterval"]
+                result += f"• Interval: Rolling {rolling.get('Duration')} {rolling.get('DurationUnit')}\n"
+            elif "CalendarInterval" in interval:
+                calendar = interval["CalendarInterval"]
+                result += f"• Interval: Calendar {calendar.get('Duration')} {calendar.get('DurationUnit')} starting {calendar.get('StartTime')}\n"
+            result += "\n"
+
+        # Period-based SLI
+        if "Sli" in slo:
+            sli = slo["Sli"]
+            result += "Period-Based SLI Configuration:\n"
+
+            sli_metric = sli.get("SliMetric", {})
+            if sli_metric:
+                # Key attributes - crucial for trace queries
+                key_attrs = sli_metric.get("KeyAttributes", {})
+                if key_attrs:
+                    result += "• Key Attributes:\n"
+                    for k, v in key_attrs.items():
+                        result += f"  - {k}: {v}\n"
+
+                # Operation name - essential for trace filtering
+                if sli_metric.get("OperationName"):
+                    result += f"• Operation Name: {sli_metric['OperationName']}\n"
+                    result += f'  (Use this in trace queries: annotation[aws.local.operation]="{sli_metric["OperationName"]}")\n'
+
+                result += f"• Metric Type: {sli_metric.get('MetricType', 'Unknown')}\n"
+
+                # Dependency config
+                dep_config = sli_metric.get("DependencyConfig", {})
+                if dep_config:
+                    result += "• Dependency Configuration:\n"
+                    dep_attrs = dep_config.get("DependencyKeyAttributes", {})
+                    for k, v in dep_attrs.items():
+                        result += f"  - {k}: {v}\n"
+                    if dep_config.get("DependencyOperationName"):
+                        result += f"  - Operation: {dep_config['DependencyOperationName']}\n"
+                        result += f'    (Use in traces: annotation[aws.remote.operation]="{dep_config["DependencyOperationName"]}")\n'
+
+            result += f"• Threshold: {sli.get('MetricThreshold', 'Unknown')}\n"
+            result += f"• Comparison: {sli.get('ComparisonOperator', 'Unknown')}\n\n"
+
+        # Request-based SLI
+        if "RequestBasedSli" in slo:
+            rbs = slo["RequestBasedSli"]
+            result += "Request-Based SLI Configuration:\n"
+
+            rbs_metric = rbs.get("RequestBasedSliMetric", {})
+            if rbs_metric:
+                # Key attributes
+                key_attrs = rbs_metric.get("KeyAttributes", {})
+                if key_attrs:
+                    result += "• Key Attributes:\n"
+                    for k, v in key_attrs.items():
+                        result += f"  - {k}: {v}\n"
+
+                # Operation name
+                if rbs_metric.get("OperationName"):
+                    result += f"• Operation Name: {rbs_metric['OperationName']}\n"
+                    result += f'  (Use this in trace queries: annotation[aws.local.operation]="{rbs_metric["OperationName"]}")\n'
+
+                result += f"• Metric Type: {rbs_metric.get('MetricType', 'Unknown')}\n"
+
+                # Dependency config
+                dep_config = rbs_metric.get("DependencyConfig", {})
+                if dep_config:
+                    result += "• Dependency Configuration:\n"
+                    dep_attrs = dep_config.get("DependencyKeyAttributes", {})
+                    for k, v in dep_attrs.items():
+                        result += f"  - {k}: {v}\n"
+                    if dep_config.get("DependencyOperationName"):
+                        result += f"  - Operation: {dep_config['DependencyOperationName']}\n"
+                        result += f'    (Use in traces: annotation.aws.remote.operation="{dep_config["DependencyOperationName"]}")\n'
+
+            result += f"• Threshold: {rbs.get('MetricThreshold', 'Unknown')}\n"
+            result += f"• Comparison: {rbs.get('ComparisonOperator', 'Unknown')}\n\n"
+
+        # Burn rate configurations
+        burn_rates = slo.get("BurnRateConfigurations", [])
+        if burn_rates:
+            result += "Burn Rate Configurations:\n"
+            for br in burn_rates:
+                result += f"• Look-back window: {br.get('LookBackWindowMinutes')} minutes\n"
+
+        return result
+
+    except ClientError as e:
+        return f"AWS Error: {e.response['Error']['Message']}"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -656,14 +973,13 @@ async def query_xray_traces(
 
 
     Common filter expressions:
-    - 'error = true': Find all traces with errors
-    - 'fault = true': Find all traces with faults (5xx errors)
+    - 'service("service-name"){fault = true}': Find all traces with faults (5xx errors) for a service
     - 'service("service-name")': Filter by specific service
     - 'duration > 5': Find slow requests (over 5 seconds)
     - 'http.status = 500': Find specific HTTP status codes
-    - 'annotation.aws.local.operation="GET /owners/*/lastname"': Filter by specific operation (from metric dimensions)
-    - 'annotation.aws.remote.operation="ListOwners"': Filter by remote operation name
-    - Combine with AND/OR: 'service("api") AND annotation.Operation="POST /visits" AND (error = true OR fault = true)'
+    - 'annotation[aws.local.operation]="GET /owners/*/lastname"': Filter by specific operation (from metric dimensions)
+    - 'annotation[aws.remote.operation]="ListOwners"': Filter by remote operation name
+    - Combine filters: 'service("api"){fault = true} AND annotation[aws.local.operation]="POST /visits"'
 
     IMPORTANT: When investigating SLO breaches, use annotation filters with the specific dimension values
     from the breached metric (e.g., Operation, RemoteOperation) to find traces for that exact operation.
@@ -814,11 +1130,58 @@ I'll use these tools in sequence:
 
 For X-Ray trace analysis:
 - If SLOs are breached: I'll use the specific metric dimensions from the breached SLO
-  (e.g., 'service("{service_name}") AND annotation.Operation="specific-operation" AND (error = true OR fault = true)')
+  (e.g., 'service("{service_name}"){{fault = true}} AND annotation[aws.local.operation]="specific-operation"')
 - If no specific SLO breach: I'll use a general error search
-  (e.g., 'service("{service_name}") AND (error = true OR fault = true)')
+  (e.g., 'service("{service_name}"){{fault = true}}')
 
 This ensures I investigate the exact operations causing issues, not just any random errors."""
+
+
+@mcp.prompt(
+    name="investigate_slo_breach", description="Comprehensive workflow to investigate and root cause SLO breaches"
+)
+def investigate_slo_breach_workflow() -> str:
+    """Guide for investigating SLO breaches using the enhanced workflow."""
+    return """I'll help you investigate SLO breaches using our enhanced workflow. Here's my systematic approach:
+
+**Enhanced Investigation Workflow:**
+
+1. **Check SLI Status** (`get_sli_status`)
+   - Identify which services have breached SLOs
+   - Get the names of specific breached SLOs
+   - See the health status overview
+
+2. **Get SLO Details** (`get_service_level_objective`)
+   - For each breached SLO, retrieve detailed configuration
+   - Extract critical information:
+     - Operation name (e.g., "POST /api/visits")
+     - Metric type (LATENCY or AVAILABILITY)
+     - Threshold values
+     - Key attributes (service, environment, etc.)
+     - Dependency configurations if any
+
+3. **Query Targeted Traces** (`query_xray_traces`)
+   - Use the exact operation name from SLO configuration
+   - Build precise X-Ray filters:
+     - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
+     - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
+   - Include dependency filters if configured
+
+4. **Analyze Root Causes**
+   - Error exceptions and messages
+   - Fault causes (5xx errors)
+   - Response time bottlenecks
+   - Dependency failures
+
+5. **Provide Actionable Insights**
+   - Top error patterns
+   - Service dependencies causing issues
+   - Specific exceptions to address
+   - Performance bottlenecks
+
+This workflow ensures we investigate the exact operations that are breaching SLOs, not just general errors.
+
+Let me start the investigation..."""
 
 
 if __name__ == "__main__":
