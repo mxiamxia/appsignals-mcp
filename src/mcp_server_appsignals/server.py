@@ -517,7 +517,6 @@ async def investigate_slo_breach(
                         "MetricThreshold"
                     )
                     if threshold and threshold > 0:
-                        # Convert threshold from milliseconds to seconds for X-Ray
                         filter_expr += f" AND duration > {threshold / 1000}"
                     else:
                         # Default to traces over 5 seconds
@@ -1075,12 +1074,13 @@ async def get_sli_status(hours: int = 24, auto_investigate: bool = True) -> str:
     - INSUFFICIENT_DATA: Not enough data to determine status
 
     When auto_investigate is True, the tool will automatically:
-    1. Call get_service_details() for breached services
-    2. Find metrics matching the breached SLO names
-    3. Extract metric dimensions (Operation, RemoteOperation, etc.)
-    4. Query X-Ray traces for those specific operations for the recent 3 hours time window. Max query window length should be less than 6 hours
-    5. Analyze error/fault root causes
-    6. Include findings in the report
+    1. Call get_service_level_objective() with SLO name to get the detailed SLI data including Metric statatics
+    2. Find the fault metrics from SLI under the breached SLO
+    3. Use metric dimensions from MetricStats (Operation, RemoteOperation, etc.) to build X-Ray query filters, for example:
+        - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
+        - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
+    5. Analyze the root causes from Exception data in trace
+    6. Include findings in the report and give the fix and mitigation suggestions.
 
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
@@ -1406,8 +1406,7 @@ def investigate_slo_breach_workflow() -> str:
    - See the health status overview
 
 2. **Get SLO Details** (`get_service_level_objective`)
-   - For each breached SLO, retrieve detailed configuration
-   - Extract critical information:
+   - For each breached SLO, get the following data from SliMetric:
      - Operation name (e.g., "POST /api/visits")
      - Metric type (LATENCY or AVAILABILITY)
      - MetricDataQueries dimensions (Operation, RemoteOperation, etc.)
@@ -1416,12 +1415,11 @@ def investigate_slo_breach_workflow() -> str:
      - Dependency configurations if any
 
 3. **Query Targeted Traces** (`query_xray_traces`)
-   - Use the exact operation name and dimensions from SLO configuration
-   - Build precise X-Ray filters:
+   - Use the exact operation name and dimensions from SLI MetricStat
+   - Build precise X-Ray filters, for example:
      - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
      - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
-   - If path parameters exist (e.g., {ownerId}), try with wildcards: `"POST /api/visit/owners/*/pets/*/visits"`
-   - Include dependency filters if configured
+   - Query window should be default to 3 hours and less than 6 hours
 
 4. **Deep Trace Analysis** 
    - The investigation will automatically perform DEEP TRACE ANALYSIS
@@ -1429,11 +1427,6 @@ def investigate_slo_breach_workflow() -> str:
      - ALL exceptions in the trace segments (not just the first one)
      - Downstream service issues and exceptions
      - Hidden errors like DynamoDB throttling that might not appear in root causes
-   - Look for patterns like:
-     - ProvisionedThroughputExceededException (DynamoDB throttling)
-     - Connection timeouts to downstream services
-     - Rate limiting errors
-     - Resource exhaustion issues
 
 5. **Provide Actionable Insights**
    - ALL exceptions found (including those deep in the trace)
@@ -1446,6 +1439,7 @@ This workflow ensures we:
 - Investigate the exact operations that are breaching SLOs
 - Look DEEP into traces to find ALL exceptions, not just surface-level errors
 - Identify the TRUE root causes that might be hidden in downstream services
+- Give the suggestion to the fixes and mitigation options
 
 Let me start the investigation..."""
 
