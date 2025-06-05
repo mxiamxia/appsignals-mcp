@@ -343,6 +343,75 @@ async def get_service_metrics(
         return f"Error: {str(e)}"
 
 
+def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) -> dict:
+    """Analyze full trace segments to find all exceptions and errors."""
+    all_exceptions = {}
+    downstream_issues = {}
+    
+    try:
+        # Get full trace details
+        batch_response = xray_client.batch_get_traces(TraceIds=trace_ids[:max_traces])
+        
+        for trace in batch_response.get("Traces", []):
+            trace_id = trace.get("Id", "Unknown")
+            
+            # Analyze all segments in the trace
+            for segment in trace.get("Segments", []):
+                document = json.loads(segment.get("Document", "{}"))
+                
+                # Check for exceptions in the segment
+                if "cause" in document:
+                    cause = document["cause"]
+                    if "exceptions" in cause:
+                        for exception in cause["exceptions"]:
+                            exc_message = exception.get("message", "Unknown error")
+                            exc_type = exception.get("type", "Unknown type")
+                            exc_key = f"{exc_type}: {exc_message}"
+                            
+                            if exc_key not in all_exceptions:
+                                all_exceptions[exc_key] = {
+                                    "count": 0,
+                                    "type": exc_type,
+                                    "message": exc_message,
+                                    "sample_trace": trace_id
+                                }
+                            all_exceptions[exc_key]["count"] += 1
+                
+                # Check subsegments for downstream service issues
+                if "subsegments" in document:
+                    for subsegment in document["subsegments"]:
+                        if subsegment.get("error") or subsegment.get("fault"):
+                            namespace = subsegment.get("namespace", "Unknown")
+                            name = subsegment.get("name", "Unknown")
+                            
+                            # Look for exceptions in subsegments
+                            if "cause" in subsegment:
+                                cause = subsegment["cause"]
+                                if "exceptions" in cause:
+                                    for exception in cause["exceptions"]:
+                                        exc_message = exception.get("message", "Unknown error")
+                                        exc_type = exception.get("type", "Unknown type")
+                                        service_key = f"{namespace}:{name}"
+                                        
+                                        if service_key not in downstream_issues:
+                                            downstream_issues[service_key] = []
+                                        
+                                        downstream_issues[service_key].append({
+                                            "type": exc_type,
+                                            "message": exc_message,
+                                            "trace_id": trace_id
+                                        })
+    
+    except Exception as e:
+        # Return what we have even if there's an error
+        pass
+    
+    return {
+        "all_exceptions": all_exceptions,
+        "downstream_issues": downstream_issues
+    }
+
+
 async def investigate_slo_breach(
     service_name: str, environment: str, slo_name: str, start_time: float, end_time: float
 ) -> str:
@@ -507,12 +576,15 @@ async def investigate_slo_breach(
                 if traces:
                     result += f"      Found {len(traces)} relevant traces\n"
 
-                    # Analyze root causes
+                    # Analyze root causes from trace summaries first
                     error_causes = {}
                     fault_causes = {}
                     response_time_issues = {}
+                    trace_ids = []
 
                     for trace in traces[:10]:  # Analyze first 10 traces
+                        trace_ids.append(trace.get("Id"))
+                        
                         # Collect error root causes
                         for cause in trace.get("ErrorRootCauses", []):
                             for service in cause.get("Services", []):
@@ -534,19 +606,51 @@ async def investigate_slo_breach(
                                     svc_name = service.get("Name", "Unknown service")
                                     response_time_issues[svc_name] = response_time_issues.get(svc_name, 0) + 1
 
-                    # Report top causes
+                    # Deep dive into trace segments for ALL exceptions
+                    result += "\n      Performing deep trace analysis...\n"
+                    trace_analysis = analyze_trace_segments(xray_client, trace_ids, max_traces=5)
+                    
+                    # Report ALL exceptions found in traces
+                    all_exceptions = trace_analysis.get("all_exceptions", {})
+                    if all_exceptions:
+                        result += "      \n      🔍 ALL EXCEPTIONS FOUND IN TRACES:\n"
+                        for exc_key, exc_info in sorted(all_exceptions.items(), key=lambda x: x[1]["count"], reverse=True):
+                            result += f"        • {exc_info['type']}:\n"
+                            result += f"          {exc_info['message']}\n"
+                            result += f"          (Found {exc_info['count']} times, sample trace: {exc_info['sample_trace']})\n"
+                    
+                    # Report downstream service issues
+                    downstream_issues = trace_analysis.get("downstream_issues", {})
+                    if downstream_issues:
+                        result += "      \n      📊 DOWNSTREAM SERVICE ISSUES:\n"
+                        for service, issues in downstream_issues.items():
+                            result += f"        • {service}:\n"
+                            # Group by exception type
+                            issue_types = {}
+                            for issue in issues:
+                                exc_type = issue["type"]
+                                if exc_type not in issue_types:
+                                    issue_types[exc_type] = []
+                                issue_types[exc_type].append(issue["message"])
+                            
+                            for exc_type, messages in issue_types.items():
+                                result += f"          - {exc_type}: {messages[0]}\n"
+                                if len(messages) > 1:
+                                    result += f"            (and {len(messages)-1} more similar errors)\n"
+
+                    # Still report the summary from root causes
                     if error_causes:
-                        result += "      Top error causes:\n"
+                        result += "\n      Summary - Top error causes from root cause analysis:\n"
                         for cause, count in sorted(error_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
                             result += f"        - {cause} ({count} occurrences)\n"
 
                     if fault_causes:
-                        result += "      Top fault causes:\n"
+                        result += "\n      Summary - Top fault causes from root cause analysis:\n"
                         for cause, count in sorted(fault_causes.items(), key=lambda x: x[1], reverse=True)[:3]:
                             result += f"        - {cause} ({count} occurrences)\n"
 
                     if response_time_issues and metric_type == "LATENCY":
-                        result += "      Services causing latency issues:\n"
+                        result += "\n      Services causing latency issues:\n"
                         for svc, count in sorted(response_time_issues.items(), key=lambda x: x[1], reverse=True)[:3]:
                             result += f"        - {svc} ({count} slow traces)\n"
 
@@ -1306,30 +1410,42 @@ def investigate_slo_breach_workflow() -> str:
    - Extract critical information:
      - Operation name (e.g., "POST /api/visits")
      - Metric type (LATENCY or AVAILABILITY)
+     - MetricDataQueries dimensions (Operation, RemoteOperation, etc.)
      - Threshold values
      - Key attributes (service, environment, etc.)
      - Dependency configurations if any
 
 3. **Query Targeted Traces** (`query_xray_traces`)
-   - Use the exact operation name from SLO configuration
+   - Use the exact operation name and dimensions from SLO configuration
    - Build precise X-Ray filters:
      - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
      - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
+   - If path parameters exist (e.g., {ownerId}), try with wildcards: `"POST /api/visit/owners/*/pets/*/visits"`
    - Include dependency filters if configured
 
-4. **Analyze Root Causes**
-   - Error exceptions and messages
-   - Fault causes (5xx errors)
-   - Response time bottlenecks
-   - Dependency failures
+4. **Deep Trace Analysis** 
+   - The investigation will automatically perform DEEP TRACE ANALYSIS
+   - This goes beyond just root cause summaries and examines:
+     - ALL exceptions in the trace segments (not just the first one)
+     - Downstream service issues and exceptions
+     - Hidden errors like DynamoDB throttling that might not appear in root causes
+   - Look for patterns like:
+     - ProvisionedThroughputExceededException (DynamoDB throttling)
+     - Connection timeouts to downstream services
+     - Rate limiting errors
+     - Resource exhaustion issues
 
 5. **Provide Actionable Insights**
-   - Top error patterns
-   - Service dependencies causing issues
-   - Specific exceptions to address
-   - Performance bottlenecks
+   - ALL exceptions found (including those deep in the trace)
+   - Downstream service failures
+   - Specific error messages and types
+   - Frequency of each error type
+   - Sample trace IDs for further investigation
 
-This workflow ensures we investigate the exact operations that are breaching SLOs, not just general errors.
+This workflow ensures we:
+- Investigate the exact operations that are breaching SLOs
+- Look DEEP into traces to find ALL exceptions, not just surface-level errors
+- Identify the TRUE root causes that might be hidden in downstream services
 
 Let me start the investigation..."""
 
