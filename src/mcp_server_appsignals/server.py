@@ -364,6 +364,7 @@ async def investigate_slo_breach(
             service_key_attrs = {}
             dependency_operation = None
             dependency_attrs = {}
+            metric_dimensions = {}
 
             # Check period-based SLI
             if "Sli" in slo:
@@ -371,6 +372,16 @@ async def investigate_slo_breach(
                 operation_name = sli_metric.get("OperationName")
                 metric_type = sli_metric.get("MetricType")
                 service_key_attrs = sli_metric.get("KeyAttributes", {})
+
+                # Extract dimensions from MetricDataQueries
+                metric_queries = sli_metric.get("MetricDataQueries", [])
+                for query in metric_queries:
+                    metric_stat = query.get("MetricStat", {})
+                    if metric_stat:
+                        metric = metric_stat.get("Metric", {})
+                        dimensions = metric.get("Dimensions", [])
+                        for dim in dimensions:
+                            metric_dimensions[dim.get("Name", "")] = dim.get("Value", "")
 
                 # Get dependency info if available
                 dep_config = sli_metric.get("DependencyConfig", {})
@@ -385,6 +396,16 @@ async def investigate_slo_breach(
                 metric_type = rbs_metric.get("MetricType")
                 service_key_attrs = rbs_metric.get("KeyAttributes", {})
 
+                # Extract dimensions from MetricDataQueries
+                metric_queries = rbs_metric.get("MetricDataQueries", [])
+                for query in metric_queries:
+                    metric_stat = query.get("MetricStat", {})
+                    if metric_stat:
+                        metric = metric_stat.get("Metric", {})
+                        dimensions = metric.get("Dimensions", [])
+                        for dim in dimensions:
+                            metric_dimensions[dim.get("Name", "")] = dim.get("Value", "")
+
                 # Get dependency info if available
                 dep_config = rbs_metric.get("DependencyConfig", {})
                 if dep_config:
@@ -395,6 +416,12 @@ async def investigate_slo_breach(
                 result += f"    - SLO monitors operation: {operation_name}\n"
                 result += f"    - Metric type: {metric_type}\n"
 
+                # Show metric dimensions if available
+                if metric_dimensions:
+                    result += "    - Metric dimensions:\n"
+                    for dim_name, dim_value in metric_dimensions.items():
+                        result += f"      - {dim_name}: {dim_value}\n"
+
                 # Step 2: Build X-Ray filter based on SLO configuration
                 # Build service filter with fault/error based on metric type
                 if metric_type == "AVAILABILITY":
@@ -402,8 +429,17 @@ async def investigate_slo_breach(
                 else:
                     filter_expr = f'service("{service_name}")'
 
-                # Add operation filter
-                filter_expr += f' AND annotation[aws.local.operation]="{operation_name}"'
+                # Add operation filter - prioritize dimensions over operation name
+                if "Operation" in metric_dimensions:
+                    # Use the dimension value directly
+                    filter_expr += f' AND annotation[aws.local.operation]="{metric_dimensions["Operation"]}"'
+                elif operation_name:
+                    # Fall back to operation name from SLO config
+                    filter_expr += f' AND annotation[aws.local.operation]="{operation_name}"'
+
+                # Add remote operation filter if available in dimensions
+                if "RemoteOperation" in metric_dimensions:
+                    filter_expr += f' AND annotation[aws.remote.operation]="{metric_dimensions["RemoteOperation"]}"'
 
                 # Add duration filter for latency SLOs
                 if metric_type == "LATENCY":
@@ -430,6 +466,44 @@ async def investigate_slo_breach(
                 )
 
                 traces = trace_response.get("TraceSummaries", [])
+                
+                # If no traces found and operation has path parameters, try alternative patterns
+                if not traces and "{" in (operation_name or ""):
+                    result += "      No traces found with exact match, trying alternative patterns...\n"
+                    
+                    # Try with wildcards for path parameters
+                    alt_operation = operation_name.replace("{ownerId}", "*").replace("{petId}", "*")
+                    alt_filter = filter_expr.replace(operation_name, alt_operation)
+                    result += f"      Alternative filter: {alt_filter}\n"
+                    
+                    trace_response = xray_client.get_trace_summaries(
+                        StartTime=trace_start, EndTime=trace_end, FilterExpression=alt_filter, Sampling=True
+                    )
+                    traces = trace_response.get("TraceSummaries", [])
+                    
+                    # If still no traces, try without the operation filter to see all faults
+                    if not traces and metric_type == "AVAILABILITY":
+                        result += "      Still no traces, checking all faults for the service...\n"
+                        simple_filter = f'service("{service_name}"){{fault = true}}'
+                        
+                        trace_response = xray_client.get_trace_summaries(
+                            StartTime=trace_start, EndTime=trace_end, FilterExpression=simple_filter, Sampling=True
+                        )
+                        traces = trace_response.get("TraceSummaries", [])
+                        
+                        if traces:
+                            result += f"      Found {len(traces)} fault traces without operation filter\n"
+                            result += "      Sample operations from traces:\n"
+                            # Show what operations are actually in the traces
+                            operations_seen = set()
+                            for trace in traces[:10]:
+                                annotations = trace.get("Annotations", {})
+                                if "aws.local.operation" in annotations:
+                                    for annotation in annotations["aws.local.operation"]:
+                                        operations_seen.add(annotation["AnnotationValue"]["StringValue"])
+                            for op in list(operations_seen)[:5]:
+                                result += f"        - {op}\n"
+                
                 if traces:
                     result += f"      Found {len(traces)} relevant traces\n"
 
@@ -723,15 +797,53 @@ async def get_service_level_objective(slo_id: str) -> str:
 
                 result += f"• Metric Type: {sli_metric.get('MetricType', 'Unknown')}\n"
 
+                # MetricDataQueries - detailed metric configuration
+                metric_queries = sli_metric.get("MetricDataQueries", [])
+                if metric_queries:
+                    result += "• Metric Data Queries:\n"
+                    for query in metric_queries:
+                        query_id = query.get("Id", "Unknown")
+                        result += f"  Query ID: {query_id}\n"
+
+                        # MetricStat details
+                        metric_stat = query.get("MetricStat", {})
+                        if metric_stat:
+                            metric = metric_stat.get("Metric", {})
+                            if metric:
+                                result += f"    Namespace: {metric.get('Namespace', 'Unknown')}\n"
+                                result += f"    MetricName: {metric.get('MetricName', 'Unknown')}\n"
+
+                                # Dimensions - crucial for understanding what's being measured
+                                dimensions = metric.get("Dimensions", [])
+                                if dimensions:
+                                    result += "    Dimensions:\n"
+                                    for dim in dimensions:
+                                        result += (
+                                            f"      - {dim.get('Name', 'Unknown')}: {dim.get('Value', 'Unknown')}\n"
+                                        )
+
+                            result += f"    Period: {metric_stat.get('Period', 'Unknown')} seconds\n"
+                            result += f"    Stat: {metric_stat.get('Stat', 'Unknown')}\n"
+                            if metric_stat.get("Unit"):
+                                result += f"    Unit: {metric_stat['Unit']}\n"
+
+                        # Expression if present
+                        if query.get("Expression"):
+                            result += f"    Expression: {query['Expression']}\n"
+
+                        result += f"    ReturnData: {query.get('ReturnData', True)}\n"
+
                 # Dependency config
                 dep_config = sli_metric.get("DependencyConfig", {})
                 if dep_config:
                     result += "• Dependency Configuration:\n"
                     dep_attrs = dep_config.get("DependencyKeyAttributes", {})
-                    for k, v in dep_attrs.items():
-                        result += f"  - {k}: {v}\n"
+                    if dep_attrs:
+                        result += "  Key Attributes:\n"
+                        for k, v in dep_attrs.items():
+                            result += f"    - {k}: {v}\n"
                     if dep_config.get("DependencyOperationName"):
-                        result += f"  - Operation: {dep_config['DependencyOperationName']}\n"
+                        result += f"  - Dependency Operation: {dep_config['DependencyOperationName']}\n"
                         result += f'    (Use in traces: annotation[aws.remote.operation]="{dep_config["DependencyOperationName"]}")\n'
 
             result += f"• Threshold: {sli.get('MetricThreshold', 'Unknown')}\n"
@@ -758,16 +870,54 @@ async def get_service_level_objective(slo_id: str) -> str:
 
                 result += f"• Metric Type: {rbs_metric.get('MetricType', 'Unknown')}\n"
 
+                # MetricDataQueries - detailed metric configuration
+                metric_queries = rbs_metric.get("MetricDataQueries", [])
+                if metric_queries:
+                    result += "• Metric Data Queries:\n"
+                    for query in metric_queries:
+                        query_id = query.get("Id", "Unknown")
+                        result += f"  Query ID: {query_id}\n"
+
+                        # MetricStat details
+                        metric_stat = query.get("MetricStat", {})
+                        if metric_stat:
+                            metric = metric_stat.get("Metric", {})
+                            if metric:
+                                result += f"    Namespace: {metric.get('Namespace', 'Unknown')}\n"
+                                result += f"    MetricName: {metric.get('MetricName', 'Unknown')}\n"
+
+                                # Dimensions - crucial for understanding what's being measured
+                                dimensions = metric.get("Dimensions", [])
+                                if dimensions:
+                                    result += "    Dimensions:\n"
+                                    for dim in dimensions:
+                                        result += (
+                                            f"      - {dim.get('Name', 'Unknown')}: {dim.get('Value', 'Unknown')}\n"
+                                        )
+
+                            result += f"    Period: {metric_stat.get('Period', 'Unknown')} seconds\n"
+                            result += f"    Stat: {metric_stat.get('Stat', 'Unknown')}\n"
+                            if metric_stat.get("Unit"):
+                                result += f"    Unit: {metric_stat['Unit']}\n"
+
+                        # Expression if present
+                        if query.get("Expression"):
+                            result += f"    Expression: {query['Expression']}\n"
+
+                        result += f"    ReturnData: {query.get('ReturnData', True)}\n"
+
                 # Dependency config
                 dep_config = rbs_metric.get("DependencyConfig", {})
                 if dep_config:
                     result += "• Dependency Configuration:\n"
                     dep_attrs = dep_config.get("DependencyKeyAttributes", {})
-                    for k, v in dep_attrs.items():
-                        result += f"  - {k}: {v}\n"
+                    if dep_attrs:
+                        result += "  Key Attributes:\n"
+                        for k, v in dep_attrs.items():
+                            result += f"    - {k}: {v}\n"
                     if dep_config.get("DependencyOperationName"):
-                        result += f"  - Operation: {dep_config['DependencyOperationName']}\n"
-                        result += f'    (Use in traces: annotation.aws.remote.operation="{dep_config["DependencyOperationName"]}")\n'
+                        result += f"  - Dependency Operation: {dep_config['DependencyOperationName']}\n"
+                        result += f'    (Use in traces: annotation[aws.remote.operation]="{dep_config["DependencyOperationName"]}")\n'
 
             result += f"• Threshold: {rbs.get('MetricThreshold', 'Unknown')}\n"
             result += f"• Comparison: {rbs.get('ComparisonOperator', 'Unknown')}\n\n"
