@@ -1,7 +1,10 @@
+import asyncio
 import json
+import logging
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from time import perf_counter as timer
+from typing import Dict, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -9,6 +12,17 @@ from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP server
 mcp = FastMCP("appsignals")
+
+# Initialize logging
+logger = logging.getLogger(__name__)
+
+# Initialize AWS clients
+logs_client = boto3.client("logs", region_name="us-east-1")
+
+
+def remove_null_values(data: dict) -> dict:
+    """Remove keys with None values from a dictionary."""
+    return {k: v for k, v in data.items() if v is not None}
 
 
 @mcp.tool()
@@ -692,6 +706,88 @@ async def get_service_level_objective(slo_id: str) -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
+@mcp.tool()
+async def run_transaction_search(
+    log_group_name: str = "",
+    start_time: str = "",
+    end_time: str = "",
+    query_string: str = "",
+    limit: Optional[int] = None,
+    max_timeout: int = 30,
+) -> Dict:
+    """Executes a CloudWatch Logs Insights query and waits for the results to be available.
+
+    IMPORTANT: If log_group_name is not provided use 'aws/spans' as default cloudwatch log group name.
+    The volume of returned logs can easily overwhelm the agent context window. Always include a limit in the query
+    (| limit 50) or using the limit parameter.
+
+    Usage:
+    "aws/spans" log group stores OpenTelemetry Spans data wiht many attributes for all monitored services.
+    User can write CloudWatch Logs Insights queries to group, list attribute with sum, avg.
+
+    ```
+    FILTER attributes.aws.local.service = "customers-service-java" and attributes.aws.local.environment = "eks:demo/default" and attributes.aws.remote.operation="InvokeModel"
+    | STATS sum(`attributes.gen_ai.usage.output_tokens`) as `avg_output_tokens` by `attributes.gen_ai.request.model`, `attributes.aws.local.service`,bin(1h)
+    | DISPLAY avg_output_tokens, `attributes.gen_ai.request.model`, `attributes.aws.local.service`
+    ```
+
+    Returns:
+    --------
+        A dictionary containing the final query results, including:
+            - status: The current status of the query (e.g., Scheduled, Running, Complete, Failed, etc.)
+            - results: A list of the actual query results if the status is Complete.
+            - statistics: Query performance statistics
+            - messages: Any informational messages about the query
+    """
+    try:
+        # Use default log group if none provided
+        if log_group_name is None:
+            log_group_name = 'aws/spans'
+
+        # Start query
+        kwargs = {
+            'startTime': int(datetime.fromisoformat(start_time).timestamp()),
+            'endTime': int(datetime.fromisoformat(end_time).timestamp()),
+            'queryString': query_string,
+            'logGroupNames': [log_group_name],
+            'limit': limit,
+        }
+
+        start_response = logs_client.start_query(**remove_null_values(kwargs))
+        query_id = start_response['queryId']
+        logger.info(f'Started query with ID: {query_id}')
+
+        # Seconds
+        poll_start = timer()
+        while poll_start + max_timeout > timer():
+            response = logs_client.get_query_results(queryId=query_id)
+            status = response['status']
+
+            if status in {'Complete', 'Failed', 'Cancelled'}:
+                logger.info(f'Query {query_id} finished with status {status}')
+                return {
+                    'queryId': query_id,
+                    'status': status,
+                    'statistics': response.get('statistics', {}),
+                    'results': [
+                        {field['field']: field['value'] for field in line}
+                        for line in response.get('results', [])
+                    ],
+                }
+
+            await asyncio.sleep(1)
+
+        msg = f'Query {query_id} did not complete within {max_timeout} seconds. Use get_query_results with the returned queryId to try again to retrieve query results.'
+        logger.warning(msg)
+        return {
+            'queryId': query_id,
+            'status': 'Polling Timeout',
+            'message': msg,
+        }
+
+    except Exception as e:
+        logger.error(f'Error in execute_log_insights_query_tool: {str(e)}')
+        raise
 
 @mcp.tool()
 async def get_sli_status(hours: int = 24) -> str:
