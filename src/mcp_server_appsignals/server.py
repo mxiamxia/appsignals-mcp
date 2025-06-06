@@ -347,18 +347,18 @@ def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) ->
     """Analyze full trace segments to find all exceptions and errors."""
     all_exceptions = {}
     downstream_issues = {}
-    
+
     try:
         # Get full trace details
         batch_response = xray_client.batch_get_traces(TraceIds=trace_ids[:max_traces])
-        
+
         for trace in batch_response.get("Traces", []):
             trace_id = trace.get("Id", "Unknown")
-            
+
             # Analyze all segments in the trace
             for segment in trace.get("Segments", []):
                 document = json.loads(segment.get("Document", "{}"))
-                
+
                 # Check for exceptions in the segment
                 if "cause" in document:
                     cause = document["cause"]
@@ -367,7 +367,7 @@ def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) ->
                             exc_message = exception.get("message", "Unknown error")
                             exc_type = exception.get("type", "Unknown type")
                             exc_key = f"{exc_type}: {exc_message}"
-                            
+
                             if exc_key not in all_exceptions:
                                 all_exceptions[exc_key] = {
                                     "count": 0,
@@ -376,14 +376,14 @@ def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) ->
                                     "sample_trace": trace_id
                                 }
                             all_exceptions[exc_key]["count"] += 1
-                
+
                 # Check subsegments for downstream service issues
                 if "subsegments" in document:
                     for subsegment in document["subsegments"]:
                         if subsegment.get("error") or subsegment.get("fault"):
                             namespace = subsegment.get("namespace", "Unknown")
                             name = subsegment.get("name", "Unknown")
-                            
+
                             # Look for exceptions in subsegments
                             if "cause" in subsegment:
                                 cause = subsegment["cause"]
@@ -392,20 +392,20 @@ def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) ->
                                         exc_message = exception.get("message", "Unknown error")
                                         exc_type = exception.get("type", "Unknown type")
                                         service_key = f"{namespace}:{name}"
-                                        
+
                                         if service_key not in downstream_issues:
                                             downstream_issues[service_key] = []
-                                        
+
                                         downstream_issues[service_key].append({
                                             "type": exc_type,
                                             "message": exc_message,
                                             "trace_id": trace_id
                                         })
-    
-    except Exception as e:
+
+    except Exception:
         # Return what we have even if there's an error
         pass
-    
+
     return {
         "all_exceptions": all_exceptions,
         "downstream_issues": downstream_issues
@@ -534,31 +534,31 @@ async def investigate_slo_breach(
                 )
 
                 traces = trace_response.get("TraceSummaries", [])
-                
+
                 # If no traces found and operation has path parameters, try alternative patterns
                 if not traces and "{" in (operation_name or ""):
                     result += "      No traces found with exact match, trying alternative patterns...\n"
-                    
+
                     # Try with wildcards for path parameters
                     alt_operation = operation_name.replace("{ownerId}", "*").replace("{petId}", "*")
                     alt_filter = filter_expr.replace(operation_name, alt_operation)
                     result += f"      Alternative filter: {alt_filter}\n"
-                    
+
                     trace_response = xray_client.get_trace_summaries(
                         StartTime=trace_start, EndTime=trace_end, FilterExpression=alt_filter, Sampling=True
                     )
                     traces = trace_response.get("TraceSummaries", [])
-                    
+
                     # If still no traces, try without the operation filter to see all faults
                     if not traces and metric_type == "AVAILABILITY":
                         result += "      Still no traces, checking all faults for the service...\n"
                         simple_filter = f'service("{service_name}"){{fault = true}}'
-                        
+
                         trace_response = xray_client.get_trace_summaries(
                             StartTime=trace_start, EndTime=trace_end, FilterExpression=simple_filter, Sampling=True
                         )
                         traces = trace_response.get("TraceSummaries", [])
-                        
+
                         if traces:
                             result += f"      Found {len(traces)} fault traces without operation filter\n"
                             result += "      Sample operations from traces:\n"
@@ -571,7 +571,7 @@ async def investigate_slo_breach(
                                         operations_seen.add(annotation["AnnotationValue"]["StringValue"])
                             for op in list(operations_seen)[:5]:
                                 result += f"        - {op}\n"
-                
+
                 if traces:
                     result += f"      Found {len(traces)} relevant traces\n"
 
@@ -583,7 +583,7 @@ async def investigate_slo_breach(
 
                     for trace in traces[:10]:  # Analyze first 10 traces
                         trace_ids.append(trace.get("Id"))
-                        
+
                         # Collect error root causes
                         for cause in trace.get("ErrorRootCauses", []):
                             for service in cause.get("Services", []):
@@ -608,7 +608,7 @@ async def investigate_slo_breach(
                     # Deep dive into trace segments for ALL exceptions
                     result += "\n      Performing deep trace analysis...\n"
                     trace_analysis = analyze_trace_segments(xray_client, trace_ids, max_traces=5)
-                    
+
                     # Report ALL exceptions found in traces
                     all_exceptions = trace_analysis.get("all_exceptions", {})
                     if all_exceptions:
@@ -617,7 +617,7 @@ async def investigate_slo_breach(
                             result += f"        • {exc_info['type']}:\n"
                             result += f"          {exc_info['message']}\n"
                             result += f"          (Found {exc_info['count']} times, sample trace: {exc_info['sample_trace']})\n"
-                    
+
                     # Report downstream service issues
                     downstream_issues = trace_analysis.get("downstream_issues", {})
                     if downstream_issues:
@@ -631,7 +631,7 @@ async def investigate_slo_breach(
                                 if exc_type not in issue_types:
                                     issue_types[exc_type] = []
                                 issue_types[exc_type].append(issue["message"])
-                            
+
                             for exc_type, messages in issue_types.items():
                                 result += f"          - {exc_type}: {messages[0]}\n"
                                 if len(messages) > 1:
@@ -851,7 +851,7 @@ async def get_service_level_objective(slo_id: str) -> str:
         if not slo:
             return f"No SLO found with ID: {slo_id}"
 
-        result = f"Service Level Objective Details\n"
+        result = "Service Level Objective Details\n"
         result += "=" * 50 + "\n\n"
 
         # Basic info
@@ -1281,6 +1281,7 @@ async def query_xray_traces(
         if filter_expression:
             kwargs["FilterExpression"] = filter_expression
 
+        print(f"get_trace_summaries input: {kwargs}")
         response = xray_client.get_trace_summaries(**kwargs)
 
         # Convert response to JSON-serializable format
