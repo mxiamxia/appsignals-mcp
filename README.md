@@ -1,6 +1,24 @@
 # MCP Server for AWS Application Signals
 
-MCP server for interacting with AWS Application Signals.
+An MCP (Model Context Protocol) server that provides tools for monitoring, analyzing, and troubleshooting AWS Application Signals services. 
+
+This server enables AI assistants to interact with AWS Application Signals to track service health, monitor SLOs (Service Level Objectives), analyze metrics, and investigate issues using distributed tracing.
+
+## Available Tools
+
+This server provides the following tools to interact with AWS Application Signals:
+
+- **`list_application_signals_services`** - Lists all services monitored by AWS Application Signals
+
+- **`get_service_details`** - Gets comprehensive information about a specific service
+
+- **`get_service_metrics`** - Queries CloudWatch metrics for a specific service
+
+- **`get_sli_status`** - Monitors SLI (Service Level Indicator) status and SLO compliance across all services
+
+- **`get_service_level_objective`** - Retrieves detailed configuration for a specific SLO
+
+- **`query_xray_traces`** - Queries AWS X-Ray traces for distributed tracing analysis
 
 ## Quick Setup
 
@@ -78,17 +96,6 @@ and you will just add the following to your `~/.aws/amazonq/mcp.json` file:
     }
 }
 ```
-
-### Available Tools
-
-This server provides tools to interact with AWS Application Signals:
-- `list_application_signals_services` - List all services monitored by AWS Application Signals
-- `get_service_details` - Get detailed information about a specific service
-- `get_service_metrics` - Query CloudWatch metrics for a service
-- `get_sli_status` - Get SLI status and SLO compliance for all services
-- `query_xray_traces` - Query AWS X-Ray traces for distributed tracing analysis
-- `daily_health_check` - Generate comprehensive daily health reports for all monitored services
-- `troubleshoot_service` - Systematic troubleshooting workflow for specific services
 
 ## Development
 
