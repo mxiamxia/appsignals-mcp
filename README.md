@@ -56,8 +56,9 @@ Add this configuration to your Claude Desktop settings:
    ```
 
 #### Amazon Q Integration
-Amazon Q integration is similiar to Claude Desktop setup. You will just have to 
-add the following to your `~/.aws/amazonq/mcp.json` file:
+Amazon Q integration is similiar to Claude Desktop setup. First to install 
+[Amazon Q Developer](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html) 
+and you will just add the following to your `~/.aws/amazonq/mcp.json` file:
 ```
 {
     "mcpServers": {
@@ -81,10 +82,13 @@ add the following to your `~/.aws/amazonq/mcp.json` file:
 ### Available Tools
 
 This server provides tools to interact with AWS Application Signals:
-- `list_application_signals_services` - List all monitored services
+- `list_application_signals_services` - List all services monitored by AWS Application Signals
 - `get_service_details` - Get detailed information about a specific service
 - `get_service_metrics` - Query CloudWatch metrics for a service
-- Additional tools for SLI/SLO management and distributed tracing
+- `get_sli_status` - Get SLI status and SLO compliance for all services
+- `query_xray_traces` - Query AWS X-Ray traces for distributed tracing analysis
+- `daily_health_check` - Generate comprehensive daily health reports for all monitored services
+- `troubleshoot_service` - Systematic troubleshooting workflow for specific services
 
 ## Development
 
