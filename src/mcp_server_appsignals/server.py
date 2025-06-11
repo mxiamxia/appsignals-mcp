@@ -10,6 +10,8 @@ import boto3
 from botocore.exceptions import ClientError
 from mcp.server.fastmcp import FastMCP
 
+from .sli_report_client import AWSConfig, SLIReportClient
+
 # Initialize FastMCP server
 mcp = FastMCP("appsignals")
 
@@ -412,73 +414,6 @@ def get_trace_summaries_paginated(xray_client, start_time, end_time, filter_expr
         return all_traces
 
 
-def analyze_trace_segments(xray_client, trace_ids: list, max_traces: int = 5) -> dict:
-    """Analyze full trace segments to find all exceptions and errors."""
-    all_exceptions = {}
-    downstream_issues = {}
-
-    try:
-        # Get full trace details
-        batch_response = xray_client.batch_get_traces(TraceIds=trace_ids[:max_traces])
-
-        for trace in batch_response.get("Traces", []):
-            trace_id = trace.get("Id", "Unknown")
-
-            # Analyze all segments in the trace
-            for segment in trace.get("Segments", []):
-                document = json.loads(segment.get("Document", "{}"))
-
-                # Check for exceptions in the segment
-                if "cause" in document:
-                    cause = document["cause"]
-                    if "exceptions" in cause:
-                        for exception in cause["exceptions"]:
-                            exc_message = exception.get("message", "Unknown error")
-                            exc_type = exception.get("type", "Unknown type")
-                            exc_key = f"{exc_type}: {exc_message}"
-
-                            if exc_key not in all_exceptions:
-                                all_exceptions[exc_key] = {
-                                    "count": 0,
-                                    "type": exc_type,
-                                    "message": exc_message,
-                                    "sample_trace": trace_id,
-                                }
-                            all_exceptions[exc_key]["count"] += 1
-
-                # Check subsegments for downstream service issues
-                if "subsegments" in document:
-                    for subsegment in document["subsegments"]:
-                        if subsegment.get("error") or subsegment.get("fault"):
-                            namespace = subsegment.get("namespace", "Unknown")
-                            name = subsegment.get("name", "Unknown")
-
-                            # Look for exceptions in subsegments
-                            if "cause" in subsegment:
-                                cause = subsegment["cause"]
-                                if "exceptions" in cause:
-                                    for exception in cause["exceptions"]:
-                                        exc_message = exception.get("message", "Unknown error")
-                                        exc_type = exception.get("type", "Unknown type")
-                                        service_key = f"{namespace}:{name}"
-
-                                        if service_key not in downstream_issues:
-                                            downstream_issues[service_key] = []
-
-                                        downstream_issues[service_key].append(
-                                            {"type": exc_type, "message": exc_message, "trace_id": trace_id}
-                                        )
-
-    except Exception:
-        # Return what we have even if there's an error
-        pass
-
-    return {"all_exceptions": all_exceptions, "downstream_issues": downstream_issues}
-
-
-# Removed investigate_slo_breach and investigate_slo_breach_fallback functions to simplify the MCP server
-
-
 @mcp.tool()
 async def get_service_level_objective(slo_id: str) -> str:
     """Get detailed information about a specific Service Level Objective (SLO).
@@ -706,6 +641,7 @@ async def get_service_level_objective(slo_id: str) -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
+
 @mcp.tool()
 async def run_transaction_search(
     log_group_name: str = "",
@@ -742,52 +678,52 @@ async def run_transaction_search(
     try:
         # Use default log group if none provided
         if log_group_name is None:
-            log_group_name = 'aws/spans'
+            log_group_name = "aws/spans"
 
         # Start query
         kwargs = {
-            'startTime': int(datetime.fromisoformat(start_time).timestamp()),
-            'endTime': int(datetime.fromisoformat(end_time).timestamp()),
-            'queryString': query_string,
-            'logGroupNames': [log_group_name],
-            'limit': limit,
+            "startTime": int(datetime.fromisoformat(start_time).timestamp()),
+            "endTime": int(datetime.fromisoformat(end_time).timestamp()),
+            "queryString": query_string,
+            "logGroupNames": [log_group_name],
+            "limit": limit,
         }
 
         start_response = logs_client.start_query(**remove_null_values(kwargs))
-        query_id = start_response['queryId']
-        logger.info(f'Started query with ID: {query_id}')
+        query_id = start_response["queryId"]
+        logger.info(f"Started query with ID: {query_id}")
 
         # Seconds
         poll_start = timer()
         while poll_start + max_timeout > timer():
             response = logs_client.get_query_results(queryId=query_id)
-            status = response['status']
+            status = response["status"]
 
-            if status in {'Complete', 'Failed', 'Cancelled'}:
-                logger.info(f'Query {query_id} finished with status {status}')
+            if status in {"Complete", "Failed", "Cancelled"}:
+                logger.info(f"Query {query_id} finished with status {status}")
                 return {
-                    'queryId': query_id,
-                    'status': status,
-                    'statistics': response.get('statistics', {}),
-                    'results': [
-                        {field['field']: field['value'] for field in line}
-                        for line in response.get('results', [])
+                    "queryId": query_id,
+                    "status": status,
+                    "statistics": response.get("statistics", {}),
+                    "results": [
+                        {field["field"]: field["value"] for field in line} for line in response.get("results", [])
                     ],
                 }
 
             await asyncio.sleep(1)
 
-        msg = f'Query {query_id} did not complete within {max_timeout} seconds. Use get_query_results with the returned queryId to try again to retrieve query results.'
+        msg = f"Query {query_id} did not complete within {max_timeout} seconds. Use get_query_results with the returned queryId to try again to retrieve query results."
         logger.warning(msg)
         return {
-            'queryId': query_id,
-            'status': 'Polling Timeout',
-            'message': msg,
+            "queryId": query_id,
+            "status": "Polling Timeout",
+            "message": msg,
         }
 
     except Exception as e:
-        logger.error(f'Error in execute_log_insights_query_tool: {str(e)}')
+        logger.error(f"Error in execute_log_insights_query_tool: {str(e)}")
         raise
+
 
 @mcp.tool()
 async def get_sli_status(hours: int = 24) -> str:
@@ -834,52 +770,73 @@ async def get_sli_status(hours: int = 24) -> str:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
     """
     try:
-        # Calculate new time range
-        end_time = datetime.utcnow().timestamp()
-        start_time = (datetime.utcnow() - timedelta(hours=24)).timestamp()
+        # Calculate time range
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=hours)
 
-        # Load SLI data from JSON file
-        current_dir = os.path.dirname(__file__)
-        json_file_path = os.path.join(current_dir, "data", "sli_resp.json")
+        # Initialize AWS Application Signals client
+        appsignals = boto3.client("application-signals", region_name="us-east-1")
 
-        with open(json_file_path, "r") as f:
-            sli_data = json.load(f)
+        # Get all services (AWS API expects Unix timestamps as integers)
+        services_response = appsignals.list_services(
+            StartTime=int(start_time.timestamp()), EndTime=int(end_time.timestamp()), MaxResults=100
+        )
+        services = services_response.get("ServiceSummaries", [])
 
-        # Generate services array from JSON data
-        services = []
-        for report in sli_data.get("Reports", []):
-            key_attrs = report["ReferenceId"]["KeyAttributes"]
-            name = key_attrs["Name"]
-            environment = key_attrs["Environment"]
-            service_type = key_attrs["Type"]
-            status = report["SliStatus"]
-            total_slo = report["TotalSloCount"]
-            ok_slo = report["OkSloCount"]
-            breached_slo = report["BreachedSloCount"]
-            breached_names = report["BreachedSloNames"]
+        if not services:
+            return "No services found in Application Signals."
 
-            services.append((name, environment, service_type, status, total_slo, ok_slo, breached_slo, breached_names))
-
-        # Generate mock response
+        # Get SLI reports for each service
         reports = []
-        for service_info in services:
-            name, env, svc_type, status, total_slo, ok_slo, breached_slo, breached_names = service_info
+        for service in services:
+            try:
+                # Create config for this service
+                service_name = service["KeyAttributes"].get("Name", "Unknown")
 
-            report = {
-                "BreachedSloCount": breached_slo,
-                "BreachedSloNames": breached_names,
-                "EndTime": end_time,
-                "OkSloCount": ok_slo,
-                "ReferenceId": {"KeyAttributes": {"Environment": env, "Name": name, "Type": svc_type}},
-                "SliStatus": status,
-                "StartTime": start_time,
-                "TotalSloCount": total_slo,
-            }
-            reports.append(report)
+                # Create custom config with the service's key attributes
+                config = AWSConfig(region="us-east-1", period_in_hours=hours, service_name=service_name)
+                # Override key_attributes to use the actual service attributes
+                config._key_attributes = service["KeyAttributes"]
+
+                # Add a property to return custom key attributes
+                type(config).key_attributes = property(lambda self: self._key_attributes)
+
+                # Generate SLI report
+                client = SLIReportClient(config)
+                sli_report = client.generate_sli_report()
+
+                # Convert to expected format
+                report = {
+                    "BreachedSloCount": sli_report.breached_slo_count,
+                    "BreachedSloNames": sli_report.breached_slo_names,
+                    "EndTime": sli_report.end_time.timestamp(),
+                    "OkSloCount": sli_report.ok_slo_count,
+                    "ReferenceId": {"KeyAttributes": service["KeyAttributes"]},
+                    "SliStatus": "BREACHED" if sli_report.sli_status == "CRITICAL" else sli_report.sli_status,
+                    "StartTime": sli_report.start_time.timestamp(),
+                    "TotalSloCount": sli_report.total_slo_count,
+                }
+                reports.append(report)
+
+            except Exception as e:
+                # Log error but continue with other services
+                logger.warning(f"Failed to get SLI report for service {service_name}: {str(e)}")
+                # Add a report with insufficient data status
+                report = {
+                    "BreachedSloCount": 0,
+                    "BreachedSloNames": [],
+                    "EndTime": end_time.timestamp(),
+                    "OkSloCount": 0,
+                    "ReferenceId": {"KeyAttributes": service["KeyAttributes"]},
+                    "SliStatus": "INSUFFICIENT_DATA",
+                    "StartTime": start_time.timestamp(),
+                    "TotalSloCount": 0,
+                }
+                reports.append(report)
 
         # Build response
         result = f"SLI Status Report - Last {hours} hours\n"
-        result += f"Time Range: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M')} - {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M')}\n\n"
+        result += f"Time Range: {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}\n\n"
 
         # Count by status
         status_counts = {
