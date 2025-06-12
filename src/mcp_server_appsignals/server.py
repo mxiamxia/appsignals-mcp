@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timedelta
 from time import perf_counter as timer
 from typing import Dict, Optional
+import traceback
 
 import boto3
 from botocore.exceptions import ClientError
@@ -15,11 +17,29 @@ from .sli_report_client import AWSConfig, SLIReportClient
 # Initialize FastMCP server
 mcp = FastMCP("appsignals")
 
-# Initialize logging
-logger = logging.getLogger(__name__)
+# Configure logging
+log_level = os.environ.get("MCP_APPSIGNALS_LOG_LEVEL", "INFO").upper()
 
-# Initialize AWS clients
-logs_client = boto3.client("logs", region_name="us-east-1")
+# Configure root logger for the module
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stderr)  # Log to stderr to avoid interference with MCP protocol
+    ],
+)
+
+# Initialize module logger
+logger = logging.getLogger(__name__)
+logger.info(f"AppSignals MCP Server initialized with log level: {log_level}")
+
+# Initialize AWS clients with logging
+try:
+    logs_client = boto3.client("logs", region_name="us-east-1")
+    logger.info("AWS CloudWatch Logs client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize AWS CloudWatch Logs client: {str(e)}")
+    raise
 
 
 def remove_null_values(data: dict) -> dict:
@@ -43,18 +63,25 @@ async def list_application_signals_services() -> str:
     - Total count of services
 
     This is typically the first tool to use when starting monitoring or investigation."""
+    start_time_perf = timer()
+    logger.info("Starting list_application_signals_services request")
+
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
+        logger.debug("Application Signals client created")
 
         # Calculate time range (last 24 hours)
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=24)
 
         # Get all services
+        logger.debug(f"Querying services for time range: {start_time} to {end_time}")
         response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
         services = response.get("ServiceSummaries", [])
+        logger.info(f"Retrieved {len(services)} services from Application Signals")
 
         if not services:
+            logger.warning("No services found in Application Signals")
             return "No services found in Application Signals."
 
         result = f"Application Signals Services ({len(services)} total):\n\n"
@@ -76,11 +103,17 @@ async def list_application_signals_services() -> str:
 
             result += "\n"
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(f"list_application_signals_services completed in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
+        logger.error(
+            f"AWS ClientError in list_application_signals_services: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+        )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
+        logger.error(f"Unexpected error in list_application_signals_services: {str(e)}", exc_info=True)
         return f"Error: {str(e)}"
 
 
@@ -106,8 +139,12 @@ async def get_service_details(service_name: str) -> str:
     Args:
         service_name: Name of the service to get details for (case-sensitive)
     """
+    start_time_perf = timer()
+    logger.info(f"Starting get_service_details request for service: {service_name}")
+
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
+        logger.debug("Application Signals client created")
 
         # Calculate time range (last 24 hours)
         end_time = datetime.utcnow()
@@ -125,9 +162,11 @@ async def get_service_details(service_name: str) -> str:
                 break
 
         if not target_service:
+            logger.warning(f"Service '{service_name}' not found in Application Signals")
             return f"Service '{service_name}' not found in Application Signals."
 
         # Get detailed service information
+        logger.debug(f"Getting detailed information for service: {service_name}")
         service_response = appsignals.get_service(
             StartTime=start_time, EndTime=end_time, KeyAttributes=target_service["KeyAttributes"]
         )
@@ -177,11 +216,17 @@ async def get_service_details(service_name: str) -> str:
                 result += f"  • {log_group}\n"
             result += "\n"
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(f"get_service_details completed for '{service_name}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
+        logger.error(
+            f"AWS ClientError in get_service_details for '{service_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+        )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
+        logger.error(f"Unexpected error in get_service_details for '{service_name}': {str(e)}", exc_info=True)
         return f"Error: {str(e)}"
 
 
@@ -219,9 +264,15 @@ async def get_service_metrics(
         extended_statistic: Extended statistic (p99, p95, p90, p50, etc)
         hours: Number of hours to look back (default 1, max 168 for 1 week)
     """
+    start_time_perf = timer()
+    logger.info(
+        f"Starting get_service_metrics request - service: {service_name}, metric: {metric_name}, hours: {hours}"
+    )
+
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
         cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+        logger.debug("AWS clients created")
 
         # Calculate time range
         end_time = datetime.utcnow()
@@ -239,6 +290,7 @@ async def get_service_metrics(
                 break
 
         if not target_service:
+            logger.warning(f"Service '{service_name}' not found in Application Signals")
             return f"Service '{service_name}' not found in Application Signals."
 
         # Get detailed service info for metric references
@@ -249,6 +301,7 @@ async def get_service_metrics(
         metric_refs = service_response["Service"].get("MetricReferences", [])
 
         if not metric_refs:
+            logger.warning(f"No metrics found for service '{service_name}'")
             return f"No metrics found for service '{service_name}'."
 
         # If no specific metric requested, show available metrics
@@ -295,6 +348,9 @@ async def get_service_metrics(
         datapoints = response.get("Datapoints", [])
 
         if not datapoints:
+            logger.warning(
+                f"No data points found for metric '{metric_name}' on service '{service_name}' in the last {hours} hour(s)"
+            )
             return f"No data points found for metric '{metric_name}' on service '{service_name}' in the last {hours} hour(s)."
 
         # Sort by timestamp
@@ -351,11 +407,19 @@ async def get_service_metrics(
 
             result += f"• {timestamp}: {', '.join(values_str)} {unit}\n"
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(f"get_service_metrics completed for '{service_name}/{metric_name}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
+        logger.error(
+            f"AWS ClientError in get_service_metrics for '{service_name}/{metric_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+        )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
+        logger.error(
+            f"Unexpected error in get_service_metrics for '{service_name}/{metric_name}': {str(e)}", exc_info=True
+        )
         return f"Error: {str(e)}"
 
 
@@ -374,6 +438,7 @@ def get_trace_summaries_paginated(xray_client, start_time, end_time, filter_expr
     """
     all_traces = []
     next_token = None
+    logger.debug(f"Starting paginated trace retrieval - filter: {filter_expression}, max_traces: {max_traces}")
 
     try:
         while len(all_traces) < max_traces:
@@ -395,6 +460,7 @@ def get_trace_summaries_paginated(xray_client, start_time, end_time, filter_expr
             # Add traces from this page
             traces = response.get("TraceSummaries", [])
             all_traces.extend(traces)
+            logger.debug(f"Retrieved {len(traces)} traces in this page, total so far: {len(all_traces)}")
 
             # Check if we have more pages
             next_token = response.get("NextToken")
@@ -406,11 +472,13 @@ def get_trace_summaries_paginated(xray_client, start_time, end_time, filter_expr
                 all_traces = all_traces[:max_traces]
                 break
 
+        logger.info(f"Successfully retrieved {len(all_traces)} traces")
         return all_traces
 
     except Exception as e:
         # Return what we have so far if there's an error
-        print(f"Error during paginated trace retrieval: {str(e)}")
+        logger.error(f"Error during paginated trace retrieval: {str(e)}", exc_info=True)
+        logger.info(f"Returning {len(all_traces)} traces retrieved before error")
         return all_traces
 
 
@@ -444,13 +512,18 @@ async def get_service_level_objective(slo_id: str) -> str:
     Args:
         slo_id: The ARN or name of the SLO to retrieve
     """
+    start_time_perf = timer()
+    logger.info(f"Starting get_service_level_objective request for SLO: {slo_id}")
+
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
+        logger.debug("Application Signals client created")
 
         response = appsignals.get_service_level_objective(Id=slo_id)
         slo = response.get("Slo", {})
 
         if not slo:
+            logger.warning(f"No SLO found with ID: {slo_id}")
             return f"No SLO found with ID: {slo_id}"
 
         result = "Service Level Objective Details\n"
@@ -634,11 +707,17 @@ async def get_service_level_objective(slo_id: str) -> str:
             for br in burn_rates:
                 result += f"• Look-back window: {br.get('LookBackWindowMinutes')} minutes\n"
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(f"get_service_level_objective completed for '{slo_id}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
+        logger.error(
+            f"AWS ClientError in get_service_level_objective for '{slo_id}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+        )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
+        logger.error(f"Unexpected error in get_service_level_objective for '{slo_id}': {str(e)}", exc_info=True)
         return f"Error: {str(e)}"
 
 
@@ -675,10 +754,15 @@ async def run_transaction_search(
             - statistics: Query performance statistics
             - messages: Any informational messages about the query
     """
+    start_time_perf = timer()
+    logger.info(f"Starting run_transaction_search - log_group: {log_group_name}, start: {start_time}, end: {end_time}")
+    logger.debug(f"Query string: {query_string}")
+
     try:
         # Use default log group if none provided
         if log_group_name is None:
             log_group_name = "aws/spans"
+            logger.debug("Using default log group: aws/spans")
 
         # Start query
         kwargs = {
@@ -689,9 +773,10 @@ async def run_transaction_search(
             "limit": limit,
         }
 
+        logger.debug(f"Starting CloudWatch Logs query with limit: {limit}")
         start_response = logs_client.start_query(**remove_null_values(kwargs))
         query_id = start_response["queryId"]
-        logger.info(f"Started query with ID: {query_id}")
+        logger.info(f"Started CloudWatch Logs query with ID: {query_id}")
 
         # Seconds
         poll_start = timer()
@@ -700,7 +785,14 @@ async def run_transaction_search(
             status = response["status"]
 
             if status in {"Complete", "Failed", "Cancelled"}:
-                logger.info(f"Query {query_id} finished with status {status}")
+                elapsed_time = timer() - start_time_perf
+                logger.info(f"Query {query_id} finished with status {status} in {elapsed_time:.3f}s")
+
+                if status == "Failed":
+                    logger.error(f"Query failed: {response.get('statistics', {})}")
+                elif status == "Complete":
+                    logger.debug(f"Query returned {len(response.get('results', []))} results")
+
                 return {
                     "queryId": query_id,
                     "status": status,
@@ -712,8 +804,9 @@ async def run_transaction_search(
 
             await asyncio.sleep(1)
 
+        elapsed_time = timer() - start_time_perf
         msg = f"Query {query_id} did not complete within {max_timeout} seconds. Use get_query_results with the returned queryId to try again to retrieve query results."
-        logger.warning(msg)
+        logger.warning(f"Query timeout after {elapsed_time:.3f}s: {msg}")
         return {
             "queryId": query_id,
             "status": "Polling Timeout",
@@ -721,7 +814,7 @@ async def run_transaction_search(
         }
 
     except Exception as e:
-        logger.error(f"Error in execute_log_insights_query_tool: {str(e)}")
+        logger.error(f"Error in run_transaction_search: {str(e)}", exc_info=True)
         raise
 
 
@@ -769,10 +862,14 @@ async def get_sli_status(hours: int = 24) -> str:
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
     """
+    start_time_perf = timer()
+    logger.info(f"Starting get_sli_status request for last {hours} hours")
+
     try:
         # Calculate time range
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=hours)
+        logger.debug(f"Time range: {start_time} to {end_time}")
 
         # Initialize AWS Application Signals client
         appsignals = boto3.client("application-signals", region_name="us-east-1")
@@ -784,10 +881,12 @@ async def get_sli_status(hours: int = 24) -> str:
         services = services_response.get("ServiceSummaries", [])
 
         if not services:
+            logger.warning("No services found in Application Signals")
             return "No services found in Application Signals."
 
         # Get SLI reports for each service
         reports = []
+        logger.info(f"Generating SLI reports for {len(services)} services")
         for service in services:
             try:
                 # Create config for this service
@@ -820,7 +919,7 @@ async def get_sli_status(hours: int = 24) -> str:
 
             except Exception as e:
                 # Log error but continue with other services
-                logger.warning(f"Failed to get SLI report for service {service_name}: {str(e)}")
+                logger.error(f"Failed to get SLI report for service {service_name}: {str(e)}", exc_info=True)
                 # Add a report with insufficient data status
                 report = {
                     "BreachedSloCount": 0,
@@ -890,9 +989,14 @@ async def get_sli_status(hours: int = 24) -> str:
 
         # Remove the auto-investigation feature
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(
+            f"get_sli_status completed in {elapsed_time:.3f}s - Total: {len(reports)}, Breached: {status_counts['BREACHED']}, OK: {status_counts['OK']}"
+        )
         return result
 
     except Exception as e:
+        logger.error(f"Error in get_sli_status: {str(e)}", exc_info=True)
         return f"Error getting SLI status: {str(e)}"
 
 
@@ -949,8 +1053,12 @@ async def query_xray_traces(
     Returns:
         JSON string containing trace summaries with error status, duration, and service details
     """
+    start_time_perf = timer()
+    logger.info(f"Starting query_xray_traces - region: {region}, filter: {filter_expression}")
+
     try:
         xray_client = boto3.client("xray", region_name=region)
+        logger.debug("X-Ray client created")
 
         # Default to past 3 hours if times not provided
         if not end_time:
@@ -965,7 +1073,11 @@ async def query_xray_traces(
 
         # Validate time window to ensure it's not too large (max 6 hours)
         time_diff = end_datetime - start_datetime
+        logger.debug(
+            f"Query time window: {start_datetime} to {end_datetime} ({time_diff.total_seconds() / 3600:.1f} hours)"
+        )
         if time_diff > timedelta(hours=6):
+            logger.warning(f"Time window too large: {time_diff.total_seconds() / 3600:.1f} hours")
             return json.dumps(
                 {
                     "error": "Time window too large. Maximum allowed is 6 hours.",
@@ -1036,9 +1148,12 @@ async def query_xray_traces(
             "Message": f"Retrieved {len(trace_summaries)} traces (limited to prevent size issues)",
         }
 
+        elapsed_time = timer() - start_time_perf
+        logger.info(f"query_xray_traces completed in {elapsed_time:.3f}s - retrieved {len(trace_summaries)} traces")
         return json.dumps(result_data, indent=2)
 
     except Exception as e:
+        logger.error(f"Error in query_xray_traces: {str(e)}", exc_info=True)
         return json.dumps({"error": str(e)}, indent=2)
 
 
