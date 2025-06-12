@@ -1,3 +1,5 @@
+"""AppSignals MCP Server."""
+
 import logging
 import sys
 
@@ -7,7 +9,7 @@ from mcp_server_appsignals.server import mcp
 logger = logging.getLogger(__name__)
 
 
-def main():
+def main() -> None:
     """Main entry point for the AppSignals MCP server."""
     try:
         logger.info("Starting AppSignals MCP server via stdio transport")

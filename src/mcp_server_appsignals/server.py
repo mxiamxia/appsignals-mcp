@@ -1,3 +1,5 @@
+"""AppSignals MCP Server - Core server implementation."""
+
 import asyncio
 import json
 import logging
@@ -6,7 +8,6 @@ import sys
 from datetime import datetime, timedelta
 from time import perf_counter as timer
 from typing import Dict, Optional
-import traceback
 
 import boto3
 from botocore.exceptions import ClientError
@@ -33,9 +34,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"AppSignals MCP Server initialized with log level: {log_level}")
 
+# Get AWS region from environment variable or use default
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+logger.info(f"Using AWS region: {AWS_REGION}")
+
 # Initialize AWS clients with logging
 try:
-    logs_client = boto3.client("logs", region_name="us-east-1")
+    logs_client = boto3.client("logs", region_name=AWS_REGION)
     logger.info("AWS CloudWatch Logs client initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize AWS CloudWatch Logs client: {str(e)}")
@@ -43,7 +48,14 @@ except Exception as e:
 
 
 def remove_null_values(data: dict) -> dict:
-    """Remove keys with None values from a dictionary."""
+    """Remove keys with None values from a dictionary.
+
+    Args:
+        data: Dictionary to clean
+
+    Returns:
+        Dictionary with None values removed
+    """
     return {k: v for k, v in data.items() if v is not None}
 
 
@@ -67,7 +79,7 @@ async def list_application_signals_services() -> str:
     logger.info("Starting list_application_signals_services request")
 
     try:
-        appsignals = boto3.client("application-signals", region_name="us-east-1")
+        appsignals = boto3.client("application-signals", region_name=AWS_REGION)
         logger.debug("Application Signals client created")
 
         # Calculate time range (last 24 hours)
@@ -270,8 +282,8 @@ async def get_service_metrics(
     )
 
     try:
-        appsignals = boto3.client("application-signals", region_name="us-east-1")
-        cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+        appsignals = boto3.client("application-signals", region_name=AWS_REGION)
+        cloudwatch = boto3.client("cloudwatch", region_name=AWS_REGION)
         logger.debug("AWS clients created")
 
         # Calculate time range

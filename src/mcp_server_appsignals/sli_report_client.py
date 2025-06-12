@@ -33,7 +33,7 @@ class AWSConfig:
     period_in_hours: int
     service_name: str
 
-    def __init__(self, region: str = "us-east-1", period_in_hours: int = 24, service_name: str = "TestService"):
+    def __init__(self, region: str = "us-east-1", period_in_hours: int = 24, service_name: str = "UnknownService"):
         self.region = region
         self.period_in_hours = min(period_in_hours, 24)  # Ensure period doesn't exceed 24 hours
         self.service_name = service_name
