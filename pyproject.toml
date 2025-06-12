@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A Model Context Protocol server providing tools to interact with AWS Application Signals"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Your Name", email = "your.email@example.com" }]
+authors = [
+    { name = "Min Xia", email = "xiami@amazon.com" },
+    { name = "Michael He", email = "yiyuanh@amazon.com" }
+]
 keywords = ["aws", "appsignals", "monitoring", "mcp", "llm"]
 license = { text = "MIT" }
 classifiers = [
