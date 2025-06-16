@@ -6,12 +6,12 @@ from datetime import datetime, timedelta
 
 from mcp_server_appsignals.server import (
     list_monitored_services,
-    get_service_healthy_details,
+    get_service_healthy_detail,
     query_service_metrics,
     get_service_level_objective,
     get_sli_status,
-    query_traces,
-    query_transaction_search,
+    query_sampled_traces,
+    search_transactions,
 )
 
 
@@ -40,7 +40,7 @@ async def test_list_monitored_services():
 
 
 @pytest.mark.asyncio
-async def test_get_service_healthy_details():
+async def test_get_service_healthy_detail():
     """Test getting service details."""
     with patch("mcp_server_appsignals.server.boto3.client") as mock_boto:
         # Mock the client
@@ -63,7 +63,7 @@ async def test_get_service_healthy_details():
         }
 
         # Call the function
-        result = await get_service_healthy_details("test-service")
+        result = await get_service_healthy_detail("test-service")
 
         # Verify
         assert "test-service" in result
