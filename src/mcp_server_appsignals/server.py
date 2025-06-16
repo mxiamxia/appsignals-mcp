@@ -60,7 +60,7 @@ def remove_null_values(data: dict) -> dict:
 
 
 @mcp.tool()
-async def list_application_signals_services() -> str:
+async def list_monitored_services() -> str:
     """List all services monitored by AWS Application Signals.
 
     Use this tool to:
@@ -116,21 +116,21 @@ async def list_application_signals_services() -> str:
             result += "\n"
 
         elapsed_time = timer() - start_time_perf
-        logger.info(f"list_application_signals_services completed in {elapsed_time:.3f}s")
+        logger.info(f"list_monitored_services completed in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
         logger.error(
-            f"AWS ClientError in list_application_signals_services: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+            f"AWS ClientError in list_monitored_services: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
         )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
-        logger.error(f"Unexpected error in list_application_signals_services: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in list_monitored_services: {str(e)}", exc_info=True)
         return f"Error: {str(e)}"
 
 
 @mcp.tool()
-async def get_service_details(service_name: str) -> str:
+async def get_service_healthy_details(service_name: str) -> str:
     """Get detailed information about a specific Application Signals service.
 
     Use this tool when you need to:
@@ -152,7 +152,7 @@ async def get_service_details(service_name: str) -> str:
         service_name: Name of the service to get details for (case-sensitive)
     """
     start_time_perf = timer()
-    logger.info(f"Starting get_service_details request for service: {service_name}")
+    logger.info(f"Starting get_service_healthy_details request for service: {service_name}")
 
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
@@ -229,21 +229,21 @@ async def get_service_details(service_name: str) -> str:
             result += "\n"
 
         elapsed_time = timer() - start_time_perf
-        logger.info(f"get_service_details completed for '{service_name}' in {elapsed_time:.3f}s")
+        logger.info(f"get_service_healthy_details completed for '{service_name}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
         logger.error(
-            f"AWS ClientError in get_service_details for '{service_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+            f"AWS ClientError in get_service_healthy_details for '{service_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
         )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
-        logger.error(f"Unexpected error in get_service_details for '{service_name}': {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in get_service_healthy_details for '{service_name}': {str(e)}", exc_info=True)
         return f"Error: {str(e)}"
 
 
 @mcp.tool()
-async def get_service_metrics(
+async def query_service_metrics(
     service_name: str, metric_name: str, statistic: str = "Average", extended_statistic: str = "p99", hours: int = 1
 ) -> str:
     """Get CloudWatch metrics for a specific Application Signals service.
@@ -278,7 +278,7 @@ async def get_service_metrics(
     """
     start_time_perf = timer()
     logger.info(
-        f"Starting get_service_metrics request - service: {service_name}, metric: {metric_name}, hours: {hours}"
+        f"Starting query_service_metrics request - service: {service_name}, metric: {metric_name}, hours: {hours}"
     )
 
     try:
@@ -420,17 +420,17 @@ async def get_service_metrics(
             result += f"• {timestamp}: {', '.join(values_str)} {unit}\n"
 
         elapsed_time = timer() - start_time_perf
-        logger.info(f"get_service_metrics completed for '{service_name}/{metric_name}' in {elapsed_time:.3f}s")
+        logger.info(f"query_service_metrics completed for '{service_name}/{metric_name}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
         logger.error(
-            f"AWS ClientError in get_service_metrics for '{service_name}/{metric_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+            f"AWS ClientError in query_service_metrics for '{service_name}/{metric_name}': {e.response['Error']['Code']} - {e.response['Error']['Message']}"
         )
         return f"AWS Error: {e.response['Error']['Message']}"
     except Exception as e:
         logger.error(
-            f"Unexpected error in get_service_metrics for '{service_name}/{metric_name}': {str(e)}", exc_info=True
+            f"Unexpected error in query_service_metrics for '{service_name}/{metric_name}': {str(e)}", exc_info=True
         )
         return f"Error: {str(e)}"
 
@@ -734,7 +734,7 @@ async def get_service_level_objective(slo_id: str) -> str:
 
 
 @mcp.tool()
-async def run_transaction_search(
+async def query_transaction_search(
     log_group_name: str = "",
     start_time: str = "",
     end_time: str = "",
@@ -767,7 +767,9 @@ async def run_transaction_search(
             - messages: Any informational messages about the query
     """
     start_time_perf = timer()
-    logger.info(f"Starting run_transaction_search - log_group: {log_group_name}, start: {start_time}, end: {end_time}")
+    logger.info(
+        f"Starting query_transaction_search - log_group: {log_group_name}, start: {start_time}, end: {end_time}"
+    )
     logger.debug(f"Query string: {query_string}")
 
     try:
@@ -826,7 +828,7 @@ async def run_transaction_search(
         }
 
     except Exception as e:
-        logger.error(f"Error in run_transaction_search: {str(e)}", exc_info=True)
+        logger.error(f"Error in query_transaction_search: {str(e)}", exc_info=True)
         raise
 
 
@@ -1013,7 +1015,7 @@ async def get_sli_status(hours: int = 24) -> str:
 
 
 @mcp.tool()
-async def query_xray_traces(
+async def query_traces(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     filter_expression: Optional[str] = None,
@@ -1066,7 +1068,7 @@ async def query_xray_traces(
         JSON string containing trace summaries with error status, duration, and service details
     """
     start_time_perf = timer()
-    logger.info(f"Starting query_xray_traces - region: {region}, filter: {filter_expression}")
+    logger.info(f"Starting query_traces - region: {region}, filter: {filter_expression}")
 
     try:
         xray_client = boto3.client("xray", region_name=region)
@@ -1161,11 +1163,11 @@ async def query_xray_traces(
         }
 
         elapsed_time = timer() - start_time_perf
-        logger.info(f"query_xray_traces completed in {elapsed_time:.3f}s - retrieved {len(trace_summaries)} traces")
+        logger.info(f"query_traces completed in {elapsed_time:.3f}s - retrieved {len(trace_summaries)} traces")
         return json.dumps(result_data, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in query_xray_traces: {str(e)}", exc_info=True)
+        logger.error(f"Error in query_traces: {str(e)}", exc_info=True)
         return json.dumps({"error": str(e)}, indent=2)
 
 

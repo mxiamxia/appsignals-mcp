@@ -5,18 +5,18 @@ from unittest.mock import Mock, patch
 from datetime import datetime, timedelta
 
 from mcp_server_appsignals.server import (
-    list_application_signals_services,
-    get_service_details,
-    get_service_metrics,
+    list_monitored_services,
+    get_service_healthy_details,
+    query_service_metrics,
     get_service_level_objective,
     get_sli_status,
-    query_xray_traces,
-    run_transaction_search,
+    query_traces,
+    query_transaction_search,
 )
 
 
 @pytest.mark.asyncio
-async def test_list_application_signals_services():
+async def test_list_monitored_services():
     """Test listing Application Signals services."""
     with patch("mcp_server_appsignals.server.boto3.client") as mock_boto:
         # Mock the client
@@ -31,7 +31,7 @@ async def test_list_application_signals_services():
         }
 
         # Call the function
-        result = await list_application_signals_services()
+        result = await list_monitored_services()
 
         # Verify
         assert "test-service" in result
@@ -40,7 +40,7 @@ async def test_list_application_signals_services():
 
 
 @pytest.mark.asyncio
-async def test_get_service_details():
+async def test_get_service_healthy_details():
     """Test getting service details."""
     with patch("mcp_server_appsignals.server.boto3.client") as mock_boto:
         # Mock the client
@@ -63,7 +63,7 @@ async def test_get_service_details():
         }
 
         # Call the function
-        result = await get_service_details("test-service")
+        result = await get_service_healthy_details("test-service")
 
         # Verify
         assert "test-service" in result
