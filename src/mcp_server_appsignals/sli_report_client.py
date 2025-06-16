@@ -280,7 +280,7 @@ class SLIReportClient:
             else:
                 healthy_slos.append(slo_summaries[i].name)
 
-        logger.info(
+        logger.debug(
             f"SLI report generated - Total SLOs: {len(slo_summaries)}, Breaching: {len(breaching_slos)}, Healthy: {len(healthy_slos)}"
         )
         return SLIReport(

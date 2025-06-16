@@ -90,7 +90,7 @@ async def list_monitored_services() -> str:
         logger.debug(f"Querying services for time range: {start_time} to {end_time}")
         response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
         services = response.get("ServiceSummaries", [])
-        logger.info(f"Retrieved {len(services)} services from Application Signals")
+        logger.debug(f"Retrieved {len(services)} services from Application Signals")
 
         if not services:
             logger.warning("No services found in Application Signals")
@@ -900,7 +900,7 @@ async def get_sli_status(hours: int = 24) -> str:
 
         # Get SLI reports for each service
         reports = []
-        logger.info(f"Generating SLI reports for {len(services)} services")
+        logger.debug(f"Generating SLI reports for {len(services)} services")
         for service in services:
             try:
                 # Create config for this service
