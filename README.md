@@ -8,17 +8,19 @@ This server enables AI assistants to interact with AWS Application Signals to tr
 
 This server provides the following tools to interact with AWS Application Signals:
 
-- **`list_application_signals_services`** - Lists all services monitored by AWS Application Signals
+- **`list_monitored_services`** - Lists all services monitored by AWS Application Signals
 
-- **`get_service_details`** - Gets comprehensive information about a specific service
+- **`get_service_detail`** - Gets the details healthy data for a specific service
 
-- **`get_service_metrics`** - Queries CloudWatch metrics for a specific service
+- **`get_service_metrics`** - Queries CloudWatch metrics for the monitored services
 
-- **`get_sli_status`** - Monitors SLI (Service Level Indicator) status and SLO compliance across all services
+- **`list_slis`** - Monitors SLI (Service Level Indicator) status and SLO compliance across all services
 
-- **`get_service_level_objective`** - Retrieves detailed configuration for a specific SLO
+- **`get_slo`** - Retrieves detailed configuration for a specific SLO
 
-- **`query_xray_traces`** - Queries AWS X-Ray traces for distributed tracing analysis
+- **`query_sampled_traces`** - Queries AWS X-Ray traces for distributed tracing analysis
+  
+- **`search_transaction_spans`** - Queries AWS X-Ray traces data
 
 ## Quick Setup
 
