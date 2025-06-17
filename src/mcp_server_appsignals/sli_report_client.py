@@ -6,11 +6,16 @@ Service Level Objectives (SLOs) using AWS Application Signals and CloudWatch met
 It helps track service health and performance against defined objectives.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import boto3
 from botocore.client import BaseClient
+from botocore.exceptions import ClientError
+
+# Initialize module logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,7 +33,7 @@ class AWSConfig:
     period_in_hours: int
     service_name: str
 
-    def __init__(self, region: str = "us-east-1", period_in_hours: int = 24, service_name: str = "TestService"):
+    def __init__(self, region: str = "us-east-1", period_in_hours: int = 24, service_name: str = "UnknownService"):
         self.region = region
         self.period_in_hours = min(period_in_hours, 24)  # Ensure period doesn't exceed 24 hours
         self.service_name = service_name
@@ -145,15 +150,36 @@ class SLIReportClient:
 
     def __init__(self, config: AWSConfig):
         self.config = config
-        # Initialize AWS service clients
-        self.signals_client = boto3.client("application-signals", region_name=config.region)
-        self.cloudwatch_client = boto3.client("cloudwatch", region_name=config.region)
+        logger.info(f"Initializing SLIReportClient for service: {config.service_name}, region: {config.region}")
+
+        try:
+            # Initialize AWS service clients
+            self.signals_client = boto3.client("application-signals", region_name=config.region)
+            self.cloudwatch_client = boto3.client("cloudwatch", region_name=config.region)
+            logger.debug("AWS clients initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize AWS clients: {str(e)}", exc_info=True)
+            raise
 
     def get_slo_summaries(self) -> List[SLOSummary]:
         """Fetches SLO summaries from AWS Application Signals."""
-        response = self.signals_client.list_service_level_objectives(
-            KeyAttributes=self.config.key_attributes, MetricSourceTypes=["ServiceOperation"], IncludeLinkedAccounts=True
-        )
+        logger.debug(f"Fetching SLO summaries for {self.config.service_name}")
+
+        try:
+            response = self.signals_client.list_service_level_objectives(
+                KeyAttributes=self.config.key_attributes,
+                MetricSourceTypes=["ServiceOperation"],
+                IncludeLinkedAccounts=True,
+            )
+            logger.info(f"Retrieved {len(response.get('SloSummaries', []))} SLO summaries")
+        except ClientError as e:
+            logger.error(
+                f"AWS ClientError getting SLO summaries: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error getting SLO summaries: {str(e)}", exc_info=True)
+            raise
 
         return [
             SLOSummary(
@@ -189,9 +215,21 @@ class SLIReportClient:
         self, queries: List[Dict[str, Any]], start_time: datetime, end_time: datetime
     ) -> List[MetricDataResult]:
         """Retrieves metric data from CloudWatch using the specified queries."""
-        response = self.cloudwatch_client.get_metric_data(
-            MetricDataQueries=queries, StartTime=start_time, EndTime=end_time
-        )
+        logger.debug(f"Fetching metric data with {len(queries)} queries")
+
+        try:
+            response = self.cloudwatch_client.get_metric_data(
+                MetricDataQueries=queries, StartTime=start_time, EndTime=end_time
+            )
+            logger.debug(f"Retrieved {len(response.get('MetricDataResults', []))} metric results")
+        except ClientError as e:
+            logger.error(
+                f"AWS ClientError getting metric data: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error getting metric data: {str(e)}", exc_info=True)
+            raise
 
         return [
             MetricDataResult(timestamps=result["Timestamps"], values=result["Values"])
@@ -209,13 +247,16 @@ class SLIReportClient:
         Collects SLO data, analyzes metrics, and produces a report containing
         the overall status and details about breaching/healthy SLOs.
         """
+        logger.info(f"Generating SLI report for {self.config.service_name}")
         end_time = datetime.now()
         start_time = end_time - timedelta(hours=self.config.period_in_hours)
+        logger.debug(f"Report time range: {start_time} to {end_time}")
 
         slo_summaries = self.get_slo_summaries()
 
         # If no SLOs found, return empty report
         if not slo_summaries:
+            logger.warning(f"No SLOs found for service {self.config.service_name}")
             return SLIReport(
                 start_time=start_time,
                 end_time=end_time,
@@ -239,6 +280,9 @@ class SLIReportClient:
             else:
                 healthy_slos.append(slo_summaries[i].name)
 
+        logger.debug(
+            f"SLI report generated - Total SLOs: {len(slo_summaries)}, Breaching: {len(breaching_slos)}, Healthy: {len(healthy_slos)}"
+        )
         return SLIReport(
             start_time=start_time,
             end_time=end_time,
