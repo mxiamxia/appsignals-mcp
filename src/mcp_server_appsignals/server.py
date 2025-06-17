@@ -130,11 +130,12 @@ async def list_monitored_services() -> str:
 
 
 @mcp.tool()
-async def get_service_healthy_detail(service_name: str) -> str:
+async def get_service_detail(service_name: str) -> str:
     """Get detailed information about a specific Application Signals service.
 
     Use this tool when you need to:
     - Understand a service's configuration and setup
+    - Understand where this servive is deployed and where it is running such as EKS, Lambda, etc.
     - See what metrics are available for a service
     - Find log groups associated with the service
     - Get service metadata and attributes
@@ -229,7 +230,7 @@ async def get_service_healthy_detail(service_name: str) -> str:
             result += "\n"
 
         elapsed_time = timer() - start_time_perf
-        logger.info(f"get_service_healthy_detail completed for '{service_name}' in {elapsed_time:.3f}s")
+        logger.info(f"get_service_detail completed for '{service_name}' in {elapsed_time:.3f}s")
         return result
 
     except ClientError as e:
@@ -495,7 +496,7 @@ def get_trace_summaries_paginated(xray_client, start_time, end_time, filter_expr
 
 
 @mcp.tool()
-async def get_service_level_objective(slo_id: str) -> str:
+async def get_slo(slo_id: str) -> str:
     """Get detailed information about a specific Service Level Objective (SLO).
 
     Use this tool to:
@@ -734,7 +735,7 @@ async def get_service_level_objective(slo_id: str) -> str:
 
 
 @mcp.tool()
-async def search_transactions(
+async def search_transaction_spans(
     log_group_name: str = "",
     start_time: str = "",
     end_time: str = "",
@@ -833,7 +834,7 @@ async def search_transactions(
 
 
 @mcp.tool()
-async def get_sli_status(hours: int = 24) -> str:
+async def list_slis(hours: int = 24) -> str:
     """Get SLI (Service Level Indicator) status and SLO compliance for all services.
 
     Use this tool to:
