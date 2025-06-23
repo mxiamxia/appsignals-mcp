@@ -743,14 +743,15 @@ async def search_transaction_spans(
     limit: Optional[int] = None,
     max_timeout: int = 30,
 ) -> Dict:
-    """Executes a CloudWatch Logs Insights query and waits for the results to be available.
+    """Executes a CloudWatch Logs Insights query for transaction search (100% sampled trace data).
 
     IMPORTANT: If log_group_name is not provided use 'aws/spans' as default cloudwatch log group name.
     The volume of returned logs can easily overwhelm the agent context window. Always include a limit in the query
     (| limit 50) or using the limit parameter.
 
     Usage:
-    "aws/spans" log group stores OpenTelemetry Spans data wiht many attributes for all monitored services.
+    "aws/spans" log group stores OpenTelemetry Spans data with many attributes for all monitored services.
+    This provides 100% sampled data vs X-Ray's 5% sampling, giving more accurate results.
     User can write CloudWatch Logs Insights queries to group, list attribute with sum, avg.
 
     ```
@@ -766,12 +767,30 @@ async def search_transaction_spans(
             - results: A list of the actual query results if the status is Complete.
             - statistics: Query performance statistics
             - messages: Any informational messages about the query
+            - transaction_search_status: Information about transaction search availability
     """
     start_time_perf = timer()
-    logger.info(
-        f"Starting search_transactions - log_group: {log_group_name}, start: {start_time}, end: {end_time}"
-    )
+    logger.info(f"Starting search_transactions - log_group: {log_group_name}, start: {start_time}, end: {end_time}")
     logger.debug(f"Query string: {query_string}")
+
+    # Check if transaction search is enabled
+    is_enabled, destination, status = check_transaction_search_enabled(AWS_REGION)
+
+    if not is_enabled:
+        logger.warning(f"Transaction Search not enabled - Destination: {destination}, Status: {status}")
+        return {
+            "status": "Transaction Search Not Available",
+            "transaction_search_status": {"enabled": False, "destination": destination, "status": status},
+            "message": (
+                "⚠️ Transaction Search is not enabled for this account. "
+                f"Current configuration: Destination={destination}, Status={status}. "
+                "Transaction Search requires sending traces to CloudWatch Logs (destination='CloudWatchLogs' and status='ACTIVE'). "
+                "Without Transaction Search, you only have access to 5% sampled trace data through X-Ray. "
+                "To get 100% trace visibility, please enable Transaction Search in your X-Ray settings. "
+                "As a fallback, you can use query_sampled_traces() but results may be incomplete due to sampling."
+            ),
+            "fallback_recommendation": "Use query_sampled_traces() with X-Ray filter expressions for 5% sampled data.",
+        }
 
     try:
         # Use default log group if none provided
@@ -815,6 +834,12 @@ async def search_transaction_spans(
                     "results": [
                         {field["field"]: field["value"] for field in line} for line in response.get("results", [])
                     ],
+                    "transaction_search_status": {
+                        "enabled": True,
+                        "destination": "CloudWatchLogs",
+                        "status": "ACTIVE",
+                        "message": "✅ Using 100% sampled trace data from Transaction Search",
+                    },
                 }
 
             await asyncio.sleep(1)
@@ -867,12 +892,15 @@ async def list_slis(hours: int = 24) -> str:
     To investigate breached SLOs, follow these steps:
     1. Call get_service_level_objective() with SLO name to get the detailed SLI data including Metric statistics
     2. Find the fault metrics from SLI under the breached SLO
-    3. Use metric dimensions from MetricStats (Operation, RemoteOperation, etc.) to build X-Ray query filters, for example:
+    3. Build trace query filters using metric dimensions (Operation, RemoteOperation, etc.):
         - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
         - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
-    4. The X-Ray query time window should be default to last 3 hours if not specified. Max query time window length is 6 hours
-    5. Analyze the root causes from Exception data in trace
-    6. Include findings in the report and give the fix and mitigation suggestions.
+    4. Query traces:
+        - If Transaction Search is enabled: Use search_transaction_spans() for 100% trace visibility
+        - If not enabled: Use query_sampled_traces() with X-Ray (only 5% sampled data - may miss issues)
+    5. The query time window should default to last 3 hours if not specified. Max query time window length is 6 hours
+    6. Analyze the root causes from Exception data in traces
+    7. Include findings in the report and give fix and mitigation suggestions
 
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
@@ -948,9 +976,20 @@ async def list_slis(hours: int = 24) -> str:
                 }
                 reports.append(report)
 
+        # Check transaction search status
+        is_tx_search_enabled, tx_destination, tx_status = check_transaction_search_enabled(AWS_REGION)
+
         # Build response
         result = f"SLI Status Report - Last {hours} hours\n"
         result += f"Time Range: {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}\n\n"
+
+        # Add transaction search status
+        if is_tx_search_enabled:
+            result += "✅ Transaction Search: ENABLED (100% trace visibility available)\n\n"
+        else:
+            result += f"⚠️ Transaction Search: NOT ENABLED (only 5% sampled traces available)\n"
+            result += f"   Current config: Destination={tx_destination}, Status={tx_status}\n"
+            result += "   Enable Transaction Search for accurate root cause analysis\n\n"
 
         # Count by status
         status_counts = {
@@ -1015,6 +1054,29 @@ async def list_slis(hours: int = 24) -> str:
         return f"Error getting SLI status: {str(e)}"
 
 
+def check_transaction_search_enabled(region: str = "us-east-1") -> tuple[bool, str, str]:
+    """Internal function to check if AWS X-Ray Transaction Search is enabled.
+
+    Returns:
+        tuple: (is_enabled: bool, destination: str, status: str)
+    """
+    try:
+        xray_client = boto3.client("xray", region_name=region)
+        response = xray_client.get_trace_segment_destination()
+
+        destination = response.get("Destination", "Unknown")
+        status = response.get("Status", "Unknown")
+
+        is_enabled = destination == "CloudWatchLogs" and status == "ACTIVE"
+        logger.debug(f"Transaction Search check - Enabled: {is_enabled}, Destination: {destination}, Status: {status}")
+
+        return is_enabled, destination, status
+
+    except Exception as e:
+        logger.error(f"Error checking transaction search status: {str(e)}")
+        return False, "Unknown", "Error"
+
+
 @mcp.tool()
 async def query_sampled_traces(
     start_time: Optional[str] = None,
@@ -1022,10 +1084,13 @@ async def query_sampled_traces(
     filter_expression: Optional[str] = None,
     region: str = "us-east-1",
 ) -> str:
-    """Query AWS X-Ray traces to investigate errors, performance issues, and request flows.
+    """Query AWS X-Ray traces (5% sampled data) to investigate errors and performance issues.
+
+    ⚠️ IMPORTANT: This tool uses X-Ray's 5% sampled trace data. For 100% trace visibility,
+    enable Transaction Search and use search_transaction_spans() instead.
 
     Use this tool to:
-    - Find root causes of errors and faults
+    - Find root causes of errors and faults (with 5% sampling limitations)
     - Analyze request latency and identify bottlenecks
     - Understand the requests across multiple services with traces
     - Debug timeout and dependency issues
@@ -1157,10 +1222,22 @@ async def query_sampled_traces(
                 trace_data[key] = convert_datetime(value)
             trace_summaries.append(trace_data)
 
+        # Check transaction search status
+        is_tx_search_enabled, tx_destination, tx_status = check_transaction_search_enabled(region)
+
         result_data = {
             "TraceSummaries": trace_summaries,
             "TraceCount": len(trace_summaries),
             "Message": f"Retrieved {len(trace_summaries)} traces (limited to prevent size issues)",
+            "SamplingNote": "⚠️ This data is from X-Ray's 5% sampling. Results may not show all errors or issues.",
+            "TransactionSearchStatus": {
+                "enabled": is_tx_search_enabled,
+                "recommendation": (
+                    "Transaction Search is available! Use search_transaction_spans() for 100% trace visibility."
+                    if is_tx_search_enabled
+                    else "Enable Transaction Search for 100% trace visibility instead of 5% sampling."
+                ),
+            },
         }
 
         elapsed_time = timer() - start_time_perf
