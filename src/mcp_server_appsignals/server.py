@@ -903,16 +903,37 @@ async def search_transaction_spans(
     The volume of returned logs can easily overwhelm the agent context window. Always include a limit in the query
     (| limit 50) or using the limit parameter.
 
+    For error detection and troubleshooting, ALWAYS filter with (attributes.error = true or attributes.http.status_code >= 500)
+    to catch all error conditions including infrastructure issues like DynamoDB throttling.
+
     Usage:
     "aws/spans" log group stores OpenTelemetry Spans data with many attributes for all monitored services.
     This provides 100% sampled data vs X-Ray's 5% sampling, giving more accurate results.
     User can write CloudWatch Logs Insights queries to group, list attribute with sum, avg.
 
+    Example - Aggregate metrics:
     ```
     FILTER attributes.aws.local.service = "customers-service-java" and attributes.aws.local.environment = "eks:demo/default" and attributes.aws.remote.operation="InvokeModel"
     | STATS sum(`attributes.gen_ai.usage.output_tokens`) as `avg_output_tokens` by `attributes.gen_ai.request.model`, `attributes.aws.local.service`,bin(1h)
     | DISPLAY avg_output_tokens, `attributes.gen_ai.request.model`, `attributes.aws.local.service`
     ```
+
+    Example - Get unique trace IDs (optimized for batch trace retrieval):
+    ```
+    FIELDS traceId
+    | FILTER attributes.aws.local.service = "customers-service-java" and attributes.aws.local.environment = "eks:demo/default"
+    | STATS count() by traceId
+    | LIMIT 10
+    ```
+
+    Example - Error detection (this query pattern uncovered DynamoDB throttling issues):
+    ```
+    FILTER attributes.aws.local.service = "visits-service-java" and attributes.aws.local.environment = "eks:demo/default" and (attributes.error = true or attributes.http.status_code >= 500)
+    | SORT @timestamp desc
+    | LIMIT 20
+    ```
+    IMPORTANT: When investigating service errors or performance issues, ALWAYS use the error detection pattern above
+    with (attributes.error = true or attributes.http.status_code >= 500) to catch all error conditions.
 
     Args:
         log_group_name: CloudWatch log group name (defaults to 'aws/spans')
