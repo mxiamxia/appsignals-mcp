@@ -971,7 +971,7 @@ async def search_transaction_spans(
                 f"Current configuration: Destination={destination}, Status={status}. "
                 "Transaction Search requires sending traces to CloudWatch Logs (destination='CloudWatchLogs' and status='ACTIVE'). "
                 "Without Transaction Search, you only have access to 5% sampled trace data through X-Ray. "
-                "To get 100% trace visibility, please enable Transaction Search in your X-Ray settings. "
+                "To get comprehensive trace observability, please enable Transaction Search in your X-Ray settings. "
                 "As a fallback, you can use query_sampled_traces() but results may be incomplete due to sampling."
             ),
             "fallback_recommendation": "Use query_sampled_traces() with X-Ray filter expressions for 5% sampled data.",
@@ -1106,7 +1106,7 @@ async def list_slis(hours: int = 24) -> str:
         - For availability: `service("service-name"){fault = true} AND annotation[aws.local.operation]="operation-name"`
         - For latency: `service("service-name") AND annotation[aws.local.operation]="operation-name" AND duration > threshold`
     4. Query traces:
-        - If Transaction Search is enabled: Use search_transaction_spans() for 100% trace visibility
+        - If Transaction Search is enabled: Use search_transaction_spans() for comprehensive trace observability
         - If not enabled: Use query_sampled_traces() with X-Ray (only 5% sampled data - may miss issues)
     5. The query time window should default to last 3 hours if not specified. Max query time window length is 6 hours
     6. Analyze the root causes from Exception data in traces
@@ -1195,7 +1195,7 @@ async def list_slis(hours: int = 24) -> str:
 
         # Add transaction search status
         if is_tx_search_enabled:
-            result += "✅ Transaction Search: ENABLED (100% trace visibility available)\n\n"
+            result += "✅ Transaction Search: ENABLED (comprehensive trace observability available)\n\n"
         else:
             result += f"⚠️ Transaction Search: NOT ENABLED (only 5% sampled traces available)\n"
             result += f"   Current config: Destination={tx_destination}, Status={tx_status}\n"
@@ -1296,7 +1296,7 @@ async def query_sampled_traces(
 ) -> str:
     """Query AWS X-Ray traces (5% sampled data) to investigate errors and performance issues.
 
-    ⚠️ IMPORTANT: This tool uses X-Ray's 5% sampled trace data. For 100% trace visibility,
+    ⚠️ IMPORTANT: This tool uses X-Ray's 5% sampled trace data. For comprehensive trace observability,
     enable Transaction Search and use search_transaction_spans() instead.
 
     Use this tool to:
@@ -1443,9 +1443,9 @@ async def query_sampled_traces(
             "TransactionSearchStatus": {
                 "enabled": is_tx_search_enabled,
                 "recommendation": (
-                    "Transaction Search is available! Use search_transaction_spans() for 100% trace visibility."
+                    "Transaction Search is available! Use search_transaction_spans() for comprehensive trace observability."
                     if is_tx_search_enabled
-                    else "Enable Transaction Search for 100% trace visibility instead of 5% sampling."
+                    else "Enable Transaction Search for comprehensive trace observability instead of 5% sampling."
                 ),
             },
         }
