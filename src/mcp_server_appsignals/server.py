@@ -897,18 +897,23 @@ async def search_transaction_spans(
     max_timeout: int = 30,
     extract_trace_ids: bool = False,
 ) -> Dict:
-    """Executes a CloudWatch Logs Insights query for transaction search (100% sampled trace data).
+    """Executes a CloudWatch Logs Insights query for transaction search (comprehensive trace data).
 
     IMPORTANT: If log_group_name is not provided use 'aws/spans' as default cloudwatch log group name.
     The volume of returned logs can easily overwhelm the agent context window. Always include a limit in the query
     (| limit 50) or using the limit parameter.
+
+    NOTE: Transaction Search status will be checked when running this query. If enabled, the response will include
+    a prominent message: "✅ Transaction Search enabled! You're getting comprehensive trace observability with full
+    trace data access for accurate root cause analysis." This message will be included in the returned data for the
+    LLM to display to the user.
 
     For error detection and troubleshooting, ALWAYS filter with (attributes.error = true or attributes.http.status_code >= 500)
     to catch all error conditions including infrastructure issues like DynamoDB throttling.
 
     Usage:
     "aws/spans" log group stores OpenTelemetry Spans data with many attributes for all monitored services.
-    This provides 100% sampled data vs X-Ray's 5% sampling, giving more accurate results.
+    This provides more comprehensive trace data vs X-Ray's 5% sampling, giving more accurate results.
     User can write CloudWatch Logs Insights queries to group, list attribute with sum, avg.
 
     Example - Aggregate metrics:
@@ -947,6 +952,7 @@ async def search_transaction_spans(
     Returns:
     --------
         A dictionary containing the final query results, including:
+            - user_message: Important message to display to the user (e.g., transaction search status)
             - status: The current status of the query (e.g., Scheduled, Running, Complete, Failed, etc.)
             - results: A list of the actual query results if the status is Complete.
             - statistics: Query performance statistics
@@ -960,6 +966,13 @@ async def search_transaction_spans(
 
     # Check if transaction search is enabled
     is_enabled, destination, status = check_transaction_search_enabled(AWS_REGION)
+
+    # Create a status message to be returned to the user
+    if is_enabled:
+        tx_status_message = "✅ Transaction Search enabled! You're getting comprehensive trace observability with full trace data access for accurate root cause analysis."
+        logger.info(tx_status_message)
+    else:
+        tx_status_message = None
 
     if not is_enabled:
         logger.warning(f"Transaction Search not enabled - Destination: {destination}, Status: {status}")
@@ -1024,9 +1037,13 @@ async def search_transaction_spans(
                         "enabled": True,
                         "destination": "CloudWatchLogs",
                         "status": "ACTIVE",
-                        "message": "✅ Using 100% sampled trace data from Transaction Search",
+                        "message": tx_status_message,
                     },
                 }
+
+                # Add the status message at the beginning for visibility
+                if tx_status_message:
+                    result_dict["user_message"] = tx_status_message
 
                 # Extract trace IDs if requested
                 if extract_trace_ids and results:
@@ -1080,6 +1097,7 @@ async def list_slis(hours: int = 24) -> str:
     - Monitor SLO compliance trends
 
     Returns a comprehensive report showing:
+    - Transaction Search status prominently at the beginning
     - Summary counts (total, healthy, breached, insufficient data)
     - Detailed list of breached services with:
       - Service name and environment
@@ -1087,6 +1105,9 @@ async def list_slis(hours: int = 24) -> str:
       - Specific SLO violations
     - List of healthy services
     - Services with insufficient data
+
+    NOTE: The report will prominently display whether Transaction Search is enabled,
+    helping you understand the quality of trace data available for root cause analysis.
 
     This is the primary tool for health monitoring and should be used:
     - At the start of each day
@@ -1189,17 +1210,21 @@ async def list_slis(hours: int = 24) -> str:
         # Check transaction search status
         is_tx_search_enabled, tx_destination, tx_status = check_transaction_search_enabled(AWS_REGION)
 
-        # Build response
-        result = f"SLI Status Report - Last {hours} hours\n"
-        result += f"Time Range: {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}\n\n"
+        # Build response - Start with Transaction Search status prominently
+        result = ""
 
-        # Add transaction search status
+        # Add prominent transaction search status message at the very beginning
         if is_tx_search_enabled:
-            result += "✅ Transaction Search: ENABLED (comprehensive trace observability available)\n\n"
+            result += "✅ GOOD NEWS: Transaction Search is ENABLED on this account!\n"
+            result += "You have comprehensive trace observability with full trace data access for accurate root cause analysis.\n\n"
         else:
-            result += f"⚠️ Transaction Search: NOT ENABLED (only 5% sampled traces available)\n"
-            result += f"   Current config: Destination={tx_destination}, Status={tx_status}\n"
-            result += "   Enable Transaction Search for accurate root cause analysis\n\n"
+            result += "⚠️ WARNING: Transaction Search is NOT ENABLED on this account.\n"
+            result += f"Current config: Destination={tx_destination}, Status={tx_status}\n"
+            result += "Without Transaction Search, you only have access to 5% sampled trace data, which may miss critical issues.\n"
+            result += "Enable Transaction Search for comprehensive observability and accurate root cause analysis.\n\n"
+
+        result += f"SLI Status Report - Last {hours} hours\n"
+        result += f"Time Range: {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}\n\n"
 
         # Count by status
         status_counts = {
@@ -1217,6 +1242,13 @@ async def list_slis(hours: int = 24) -> str:
         # Group by status
         if status_counts["BREACHED"] > 0:
             result += "⚠️  BREACHED SERVICES:\n"
+            if is_tx_search_enabled:
+                result += "(Use Transaction Search for comprehensive root cause analysis of these issues)\n"
+            else:
+                result += (
+                    "(Note: Only 5% sampled trace data available - enable Transaction Search for full visibility)\n"
+                )
+
             for report in reports:
                 if report["SliStatus"] == "BREACHED":
                     name = report["ReferenceId"]["KeyAttributes"]["Name"]
