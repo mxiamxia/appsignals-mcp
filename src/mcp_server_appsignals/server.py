@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from time import perf_counter as timer
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -57,6 +57,159 @@ def remove_null_values(data: dict) -> dict:
         Dictionary with None values removed
     """
     return {k: v for k, v in data.items() if v is not None}
+
+
+def convert_otel_to_xray_trace_id(otel_trace_id: str) -> str:
+    """Convert OpenTelemetry trace ID format to X-Ray trace ID format.
+
+    OTEL format: 32 hex characters (e.g., "1234567890abcdef1234567890abcdef")
+    X-Ray format: "1-XXXXXXXX-YYYYYYYYYYYYYYYYYYYYYYYY" where:
+      - First segment is always "1"
+      - XXXXXXXX is the first 8 hex chars (Unix epoch time in hex)
+      - YYYYYYYY... is the remaining 24 hex chars
+
+    Args:
+        otel_trace_id: 32 character hex string
+
+    Returns:
+        X-Ray formatted trace ID
+    """
+    if len(otel_trace_id) != 32:
+        raise ValueError(f"Invalid OTEL trace ID length: {len(otel_trace_id)}, expected 32")
+
+    # Extract the first 8 chars (epoch time) and remaining 24 chars
+    epoch_hex = otel_trace_id[:8]
+    unique_hex = otel_trace_id[8:]
+
+    # Format as X-Ray trace ID
+    return f"1-{epoch_hex}-{unique_hex}"
+
+
+def parse_trace_segments_for_faults(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Parse trace segments to extract fault/error information.
+
+    Args:
+        traces: List of trace objects from batch_get_traces
+
+    Returns:
+        List of fault information with trace ID, service, operation, and exception details
+    """
+    faults = []
+
+    for trace in traces:
+        trace_id = trace.get("Id", "")
+
+        # Process each segment in the trace
+        for segment in trace.get("Segments", []):
+            try:
+                # Parse the segment document (it's a JSON string)
+                segment_doc = json.loads(segment.get("Document", "{}"))
+
+                # Check if this segment has a fault
+                if segment_doc.get("fault", False) or segment_doc.get("error", False):
+                    fault_info = {
+                        "trace_id": trace_id,
+                        "segment_id": segment.get("Id", ""),
+                        "service": segment_doc.get("name", "Unknown"),
+                        "fault": segment_doc.get("fault", False),
+                        "error": segment_doc.get("error", False),
+                        "start_time": segment_doc.get("start_time"),
+                        "end_time": segment_doc.get("end_time"),
+                    }
+
+                    # Extract annotations for operation info
+                    annotations = segment_doc.get("annotations", {})
+                    if annotations:
+                        fault_info["operation"] = annotations.get("aws.local.operation", "")
+                        fault_info["remote_operation"] = annotations.get("aws.remote.operation", "")
+
+                    # Extract exception/error details from cause
+                    cause = segment_doc.get("cause", {})
+                    if cause:
+                        # Parse exceptions from the cause
+                        exceptions = cause.get("exceptions", [])
+                        if exceptions:
+                            fault_info["exceptions"] = []
+                            for exc in exceptions:
+                                exc_info = {
+                                    "message": exc.get("message", ""),
+                                    "type": exc.get("type", ""),
+                                    "stack": exc.get("stack", []),
+                                }
+                                fault_info["exceptions"].append(exc_info)
+
+                    # Also check subsegments for more detailed error info
+                    subsegments = segment_doc.get("subsegments", [])
+                    for subseg in subsegments:
+                        if subseg.get("fault", False) or subseg.get("error", False):
+                            subseg_cause = subseg.get("cause", {})
+                            if subseg_cause and "exceptions" in subseg_cause:
+                                if "exceptions" not in fault_info:
+                                    fault_info["exceptions"] = []
+                                for exc in subseg_cause.get("exceptions", []):
+                                    exc_info = {
+                                        "message": exc.get("message", ""),
+                                        "type": exc.get("type", ""),
+                                        "stack": exc.get("stack", []),
+                                        "subsegment": subseg.get("name", ""),
+                                    }
+                                    fault_info["exceptions"].append(exc_info)
+
+                    faults.append(fault_info)
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse segment document: {e}")
+                continue
+
+    return faults
+
+
+def get_batch_traces(xray_client, trace_ids: List[str]) -> List[Dict[str, Any]]:
+    """Get full trace details for a list of trace IDs using batch_get_traces.
+
+    Args:
+        xray_client: Boto3 X-Ray client
+        trace_ids: List of trace IDs (in X-Ray format)
+
+    Returns:
+        List of trace objects with segments
+    """
+    if not trace_ids:
+        return []
+
+    all_traces = []
+    unprocessed_ids = trace_ids.copy()
+
+    logger.debug(f"Starting batch trace retrieval for {len(trace_ids)} traces")
+
+    while unprocessed_ids:
+        try:
+            # X-Ray batch_get_traces has a limit of 5 trace IDs per request
+            batch_ids = unprocessed_ids[:5]
+
+            response = xray_client.batch_get_traces(TraceIds=batch_ids)
+
+            # Add retrieved traces
+            traces = response.get("Traces", [])
+            all_traces.extend(traces)
+            logger.debug(f"Retrieved {len(traces)} traces in this batch")
+
+            # Update unprocessed list
+            unprocessed = response.get("UnprocessedTraceIds", [])
+            unprocessed_ids = unprocessed_ids[5:]  # Remove processed batch
+
+            # Add any that failed to process back to the list
+            if unprocessed:
+                logger.warning(f"Failed to retrieve {len(unprocessed)} traces: {unprocessed}")
+                # Don't retry failed ones to avoid infinite loop
+
+        except Exception as e:
+            logger.error(f"Error in batch_get_traces: {str(e)}", exc_info=True)
+            # Continue with remaining traces
+            unprocessed_ids = unprocessed_ids[5:]
+
+    logger.info(f"Successfully retrieved {len(all_traces)} traces total")
+    return all_traces
 
 
 @mcp.tool()
@@ -742,6 +895,7 @@ async def search_transaction_spans(
     query_string: str = "",
     limit: Optional[int] = None,
     max_timeout: int = 30,
+    extract_trace_ids: bool = False,
 ) -> Dict:
     """Executes a CloudWatch Logs Insights query for transaction search (100% sampled trace data).
 
@@ -760,6 +914,15 @@ async def search_transaction_spans(
     | DISPLAY avg_output_tokens, `attributes.gen_ai.request.model`, `attributes.aws.local.service`
     ```
 
+    Args:
+        log_group_name: CloudWatch log group name (defaults to 'aws/spans')
+        start_time: Start time in ISO format
+        end_time: End time in ISO format
+        query_string: CloudWatch Logs Insights query string
+        limit: Maximum number of results to return
+        max_timeout: Maximum time to wait for query completion (seconds)
+        extract_trace_ids: If True, extracts unique trace IDs from results
+
     Returns:
     --------
         A dictionary containing the final query results, including:
@@ -768,6 +931,7 @@ async def search_transaction_spans(
             - statistics: Query performance statistics
             - messages: Any informational messages about the query
             - transaction_search_status: Information about transaction search availability
+            - trace_ids: List of unique trace IDs (if extract_trace_ids=True)
     """
     start_time_perf = timer()
     logger.info(f"Starting search_transactions - log_group: {log_group_name}, start: {start_time}, end: {end_time}")
@@ -827,13 +991,14 @@ async def search_transaction_spans(
                 elif status == "Complete":
                     logger.debug(f"Query returned {len(response.get('results', []))} results")
 
-                return {
+                # Process results
+                results = [{field["field"]: field["value"] for field in line} for line in response.get("results", [])]
+
+                result_dict = {
                     "queryId": query_id,
                     "status": status,
                     "statistics": response.get("statistics", {}),
-                    "results": [
-                        {field["field"]: field["value"] for field in line} for line in response.get("results", [])
-                    ],
+                    "results": results,
                     "transaction_search_status": {
                         "enabled": True,
                         "destination": "CloudWatchLogs",
@@ -841,6 +1006,30 @@ async def search_transaction_spans(
                         "message": "✅ Using 100% sampled trace data from Transaction Search",
                     },
                 }
+
+                # Extract trace IDs if requested
+                if extract_trace_ids and results:
+                    trace_ids = set()
+                    for result in results:
+                        # Look for trace_id field in various possible locations
+                        if "trace_id" in result:
+                            trace_ids.add(result["trace_id"])
+                        elif "attributes.trace_id" in result:
+                            trace_ids.add(result["attributes.trace_id"])
+                        elif "@ptr" in result:
+                            # Extract trace ID from pointer field if present
+                            ptr_value = result["@ptr"]
+                            if "trace_id:" in ptr_value:
+                                trace_id = ptr_value.split("trace_id:")[1].split(" ")[0]
+                                trace_ids.add(trace_id)
+
+                    # Convert to list and limit to first 10 unique trace IDs
+                    unique_trace_ids = list(trace_ids)[:10]
+                    result_dict["trace_ids"] = unique_trace_ids
+                    result_dict["trace_id_count"] = len(trace_ids)
+                    logger.info(f"Extracted {len(unique_trace_ids)} unique trace IDs from {len(trace_ids)} total")
+
+                return result_dict
 
             await asyncio.sleep(1)
 
