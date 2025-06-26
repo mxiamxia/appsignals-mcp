@@ -969,7 +969,7 @@ async def search_transaction_spans(
 
     # Create a status message to be returned to the user
     if is_enabled:
-        tx_status_message = "✅ Transaction Search enabled! You're getting comprehensive trace observability with full trace data access for accurate root cause analysis."
+        tx_status_message = "✅ Great! Transaction Search is enabled. We have access to comprehensive trace data, providing more accurate insights for this investigation."
         logger.info(tx_status_message)
     else:
         tx_status_message = None
