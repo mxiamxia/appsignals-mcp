@@ -891,10 +891,9 @@ async def search_transaction_spans(
 
     try:
         # Use default log group if none provided
-        if log_group_name is None:
+        if log_group_name == "" or log_group_name is None:
             log_group_name = "aws/spans"
             logger.debug("Using default log group: aws/spans")
-
         # Start query
         kwargs = {
             "startTime": int(datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp()),
