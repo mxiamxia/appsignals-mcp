@@ -60,7 +60,7 @@ def remove_null_values(data: dict) -> dict:
 
 
 @mcp.tool()
-async def list_monitored_services() -> str:
+async def list_monitored_services(include_linked_accounts: bool = True) -> str:
     """List all services monitored by AWS Application Signals.
 
     Use this tool to:
@@ -68,15 +68,21 @@ async def list_monitored_services() -> str:
     - See service names, types, and key attributes
     - Identify which services are being tracked
     - Count total number of services in your environment
+    - View services across multiple linked AWS accounts (when include_linked_accounts=True)
 
     Returns a formatted list showing:
     - Service name and type
     - Key attributes (Environment, Platform, etc.)
+    - AWS Account ID (available in KeyAttributes as AwsAccountId)
     - Total count of services
 
-    This is typically the first tool to use when starting monitoring or investigation."""
+    This is typically the first tool to use when starting monitoring or investigation.
+    
+    Args:
+        include_linked_accounts: Whether to include services from linked AWS accounts (default: True)
+    """
     start_time_perf = timer()
-    logger.info("Starting list_application_signals_services request")
+    logger.info(f"Starting list_application_signals_services request (include_linked_accounts={include_linked_accounts})")
 
     try:
         appsignals = boto3.client("application-signals", region_name=AWS_REGION)
@@ -88,7 +94,12 @@ async def list_monitored_services() -> str:
 
         # Get all services
         logger.debug(f"Querying services for time range: {start_time} to {end_time}")
-        response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        response = appsignals.list_services(
+            StartTime=start_time, 
+            EndTime=end_time, 
+            MaxResults=100,
+            IncludeLinkedAccounts=include_linked_accounts
+        )
         services = response.get("ServiceSummaries", [])
         logger.debug(f"Retrieved {len(services)} services from Application Signals")
 
@@ -130,7 +141,7 @@ async def list_monitored_services() -> str:
 
 
 @mcp.tool()
-async def get_service_detail(service_name: str) -> str:
+async def get_service_detail(service_name: str, include_linked_accounts: bool = True) -> str:
     """Get detailed information about a specific Application Signals service.
 
     Use this tool when you need to:
@@ -151,9 +162,10 @@ async def get_service_detail(service_name: str) -> str:
 
     Args:
         service_name: Name of the service to get details for (case-sensitive)
+        include_linked_accounts: Whether to include services from linked AWS accounts (default: True)
     """
     start_time_perf = timer()
-    logger.info(f"Starting get_service_healthy_detail request for service: {service_name}")
+    logger.info(f"Starting get_service_healthy_detail request for service: {service_name} (include_linked_accounts={include_linked_accounts})")
 
     try:
         appsignals = boto3.client("application-signals", region_name="us-east-1")
@@ -164,7 +176,12 @@ async def get_service_detail(service_name: str) -> str:
         start_time = end_time - timedelta(hours=24)
 
         # First, get all services to find the one we want
-        services_response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        services_response = appsignals.list_services(
+            StartTime=start_time, 
+            EndTime=end_time, 
+            MaxResults=100,
+            IncludeLinkedAccounts=include_linked_accounts
+        )
 
         # Find the service with matching name
         target_service = None
@@ -245,7 +262,12 @@ async def get_service_detail(service_name: str) -> str:
 
 @mcp.tool()
 async def query_service_metrics(
-    service_name: str, metric_name: str, statistic: str = "Average", extended_statistic: str = "p99", hours: int = 1
+    service_name: str, 
+    metric_name: str, 
+    statistic: str = "Average", 
+    extended_statistic: str = "p99", 
+    hours: int = 1,
+    include_linked_accounts: bool = True
 ) -> str:
     """Get CloudWatch metrics for a specific Application Signals service.
 
@@ -276,10 +298,11 @@ async def query_service_metrics(
         statistic: Standard statistic type (Average, Sum, Maximum, Minimum, SampleCount)
         extended_statistic: Extended statistic (p99, p95, p90, p50, etc)
         hours: Number of hours to look back (default 1, max 168 for 1 week)
+        include_linked_accounts: Whether to include services from linked AWS accounts (default: True)
     """
     start_time_perf = timer()
     logger.info(
-        f"Starting query_service_metrics request - service: {service_name}, metric: {metric_name}, hours: {hours}"
+        f"Starting query_service_metrics request - service: {service_name}, metric: {metric_name}, hours: {hours}, include_linked_accounts: {include_linked_accounts}"
     )
 
     try:
@@ -292,7 +315,12 @@ async def query_service_metrics(
         start_time = end_time - timedelta(hours=hours)
 
         # Get service details to find metrics
-        services_response = appsignals.list_services(StartTime=start_time, EndTime=end_time, MaxResults=100)
+        services_response = appsignals.list_services(
+            StartTime=start_time, 
+            EndTime=end_time, 
+            MaxResults=100,
+            IncludeLinkedAccounts=include_linked_accounts
+        )
 
         # Find the target service
         target_service = None
@@ -346,19 +374,89 @@ async def query_service_metrics(
         else:
             period = 3600  # 1 hour
 
-        # Get both standard and extended statistics in a single call
-        response = cloudwatch.get_metric_statistics(
-            Namespace=target_metric["Namespace"],
-            MetricName=target_metric["MetricName"],
-            Dimensions=target_metric.get("Dimensions", []),
-            StartTime=start_time,
-            EndTime=end_time,
-            Period=period,
-            Statistics=[statistic],
-            ExtendedStatistics=[extended_statistic],
-        )
-
-        datapoints = response.get("Datapoints", [])
+        # Check if we need to specify an AccountId for cross-account metrics
+        account_id = None
+        
+        # First check if the metric reference has an AccountId
+        if hasattr(target_metric, "AccountId") and target_metric.get("AccountId"):
+            account_id = target_metric.get("AccountId")
+        # If not, try to get it from the service's KeyAttributes
+        elif "KeyAttributes" in service_response["Service"] and service_response["Service"]["KeyAttributes"].get("AwsAccountId"):
+            account_id = service_response["Service"]["KeyAttributes"].get("AwsAccountId")
+        
+        # Build metric data query for standard statistic
+        metric_query_standard = {
+            "Id": "m1",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": target_metric["Namespace"],
+                    "MetricName": target_metric["MetricName"],
+                    "Dimensions": target_metric.get("Dimensions", [])
+                },
+                "Period": period,
+                "Stat": statistic
+            },
+            "ReturnData": True
+        }
+        
+        # Add AccountId to the metric query if available
+        if account_id:
+            metric_query_standard["AccountId"] = account_id
+        
+        # Build metric data query for extended statistic (percentile)
+        metric_query_extended = {
+            "Id": "m2",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": target_metric["Namespace"],
+                    "MetricName": target_metric["MetricName"],
+                    "Dimensions": target_metric.get("Dimensions", [])
+                },
+                "Period": period,
+                "Stat": extended_statistic
+            },
+            "ReturnData": True
+        }
+        
+        # Add AccountId to the extended metric query if available
+        if account_id:
+            metric_query_extended["AccountId"] = account_id
+        
+        # Build parameters for CloudWatch call
+        params = {
+            "MetricDataQueries": [metric_query_standard, metric_query_extended],
+            "StartTime": start_time,
+            "EndTime": end_time
+        }
+        
+        # Note: AccountId is added to each individual MetricDataQuery, not at the top level
+            
+        # Get both standard and extended statistics in a single call using get_metric_data
+        response = cloudwatch.get_metric_data(**params)
+        
+        # Process the response which has a different format than get_metric_statistics
+        metric_results = response.get("MetricDataResults", [])
+        
+        # Convert to a format similar to what we had with get_metric_statistics
+        datapoints = []
+        
+        # Get timestamps from the first result (they should be the same for both)
+        if metric_results and len(metric_results) > 0 and metric_results[0].get("Timestamps"):
+            timestamps = metric_results[0].get("Timestamps", [])
+            
+            # Create datapoints with both statistics
+            for i, timestamp in enumerate(timestamps):
+                datapoint = {"Timestamp": timestamp}
+                
+                # Add standard statistic if available
+                if len(metric_results) > 0 and i < len(metric_results[0].get("Values", [])):
+                    datapoint[statistic] = metric_results[0]["Values"][i]
+                
+                # Add extended statistic if available
+                if len(metric_results) > 1 and i < len(metric_results[1].get("Values", [])):
+                    datapoint[extended_statistic] = metric_results[1]["Values"][i]
+                
+                datapoints.append(datapoint)
 
         if not datapoints:
             logger.warning(
@@ -366,7 +464,7 @@ async def query_service_metrics(
             )
             return f"No data points found for metric '{metric_name}' on service '{service_name}' in the last {hours} hour(s)."
 
-        # Sort by timestamp
+        # Sort by timestamp (already sorted by CloudWatch, but just to be sure)
         datapoints.sort(key=lambda x: x["Timestamp"])
 
         # Build response
@@ -544,7 +642,6 @@ async def get_slo(slo_id: str) -> str:
 
         # Basic info
         result += f"Name: {slo.get('Name', 'Unknown')}\n"
-        result += f"ARN: {slo.get('Arn', 'Unknown')}\n"
         if slo.get("Description"):
             result += f"Description: {slo['Description']}\n"
         result += f"Evaluation Type: {slo.get('EvaluationType', 'Unknown')}\n"
@@ -800,8 +897,8 @@ async def search_transaction_spans(
 
         # Start query
         kwargs = {
-            "startTime": int(datetime.fromisoformat(start_time).timestamp()),
-            "endTime": int(datetime.fromisoformat(end_time).timestamp()),
+            "startTime": int(datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp()),
+            "endTime": int(datetime.fromisoformat(end_time.replace('Z', '+00:00')).timestamp()),
             "queryString": query_string,
             "logGroupNames": [log_group_name],
             "limit": limit,
@@ -859,7 +956,7 @@ async def search_transaction_spans(
 
 
 @mcp.tool()
-async def list_slis(hours: int = 24) -> str:
+async def list_slis(hours: int = 24, include_linked_accounts: bool = True) -> str:
     """Get SLI (Service Level Indicator) status and SLO compliance for all services.
 
     Use this tool to:
@@ -868,6 +965,7 @@ async def list_slis(hours: int = 24) -> str:
     - See which specific SLOs are failing
     - Prioritize which services need immediate attention
     - Monitor SLO compliance trends
+    - View services across multiple linked AWS accounts (when include_linked_accounts=True)
 
     Returns a comprehensive report showing:
     - Summary counts (total, healthy, breached, insufficient data)
@@ -904,9 +1002,10 @@ async def list_slis(hours: int = 24) -> str:
 
     Args:
         hours: Number of hours to look back (default 24, typically use 24 for daily checks)
+        include_linked_accounts: Whether to include services from linked AWS accounts (default: True)
     """
     start_time_perf = timer()
-    logger.info(f"Starting get_sli_status request for last {hours} hours")
+    logger.info(f"Starting get_sli_status request for last {hours} hours (include_linked_accounts={include_linked_accounts})")
 
     try:
         # Calculate time range
@@ -919,7 +1018,10 @@ async def list_slis(hours: int = 24) -> str:
 
         # Get all services (AWS API expects Unix timestamps as integers)
         services_response = appsignals.list_services(
-            StartTime=int(start_time.timestamp()), EndTime=int(end_time.timestamp()), MaxResults=100
+            StartTime=int(start_time.timestamp()), 
+            EndTime=int(end_time.timestamp()), 
+            MaxResults=100,
+            IncludeLinkedAccounts=include_linked_accounts
         )
         services = services_response.get("ServiceSummaries", [])
 
@@ -934,14 +1036,22 @@ async def list_slis(hours: int = 24) -> str:
             try:
                 # Create config for this service
                 service_name = service["KeyAttributes"].get("Name", "Unknown")
+                service_environment = service["KeyAttributes"].get("Environment", "Unknown")
+                service_type = service["KeyAttributes"].get("Type", "Service")
+                # Extract AWS account ID from service attributes
+                aws_account_id = service["KeyAttributes"].get("AwsAccountId", "")
 
                 # Create custom config with the service's key attributes
-                config = AWSConfig(region="us-east-1", period_in_hours=hours, service_name=service_name)
-                # Override key_attributes to use the actual service attributes
-                config._key_attributes = service["KeyAttributes"]
-
-                # Add a property to return custom key attributes
-                type(config).key_attributes = property(lambda self: self._key_attributes)
+                config = AWSConfig(
+                    region="us-east-1",
+                    period_in_hours=hours, 
+                    service_name=service_name, 
+                    service_environment = service_environment,
+                    service_type=service_type,
+                    aws_account_id = aws_account_id)
+                
+                # If there are other attributes in KeyAttributes that need to be used,
+                # we can access them directly from service["KeyAttributes"] when needed
 
                 # Generate SLI report
                 client = SLIReportClient(config)
