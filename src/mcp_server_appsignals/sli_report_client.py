@@ -32,16 +32,29 @@ class AWSConfig:
     region: str
     period_in_hours: int
     service_name: str
+    service_environment: str
+    service_type: str
+    aws_account_id: str
 
-    def __init__(self, region: str = "us-east-1", period_in_hours: int = 24, service_name: str = "UnknownService"):
+    def __init__(self,
+                region: str = "us-east-1",
+                period_in_hours: int = 24, 
+                service_name: str = "UnknownService", 
+                service_environment: str = "UnknownEnvironment", 
+                service_type: str = "Service",
+                aws_account_id: str = ""):
         self.region = region
         self.period_in_hours = min(period_in_hours, 24)  # Ensure period doesn't exceed 24 hours
         self.service_name = service_name
+        self.service_environment = service_environment
+        self.service_type = service_type
+        if(aws_account_id != ""):
+            self.aws_account_id = aws_account_id
 
     @property
     def key_attributes(self) -> Dict[str, str]:
         """Returns the key attributes used to identify the service in AWS."""
-        return {"Name": self.service_name, "Type": "Service", "Environment": self.region}
+        return {"Name": self.service_name, "Type": self.service_type, "Environment": self.service_environment, "AwsAccountId": self.aws_account_id}
 
 
 @dataclass
@@ -55,6 +68,7 @@ class SLOSummary:
         key_attributes (Dict): Service identification attributes
         operation_name (str): Name of the monitored operation
         created_time (datetime): When the SLO was created
+        evaluation_type(str): Evaluation Type of the SLO
     """
 
     name: str
@@ -62,6 +76,7 @@ class SLOSummary:
     key_attributes: Dict[str, str]
     operation_name: str
     created_time: datetime
+    evaluation_type: str
 
 
 @dataclass
@@ -188,6 +203,7 @@ class SLIReportClient:
                 key_attributes=slo.get("KeyAttributes", {}),
                 operation_name=slo.get("OperationName", "N/A"),
                 created_time=slo["CreatedTime"],
+                evaluation_type=slo.get("EvaluationType", "PeriodBased"),
             )
             for slo in response["SloSummaries"]
         ]
@@ -207,6 +223,7 @@ class SLIReportClient:
                     "Stat": "Maximum",
                 },
                 "ReturnData": True,
+                "AccountId": self.get_account_id_for_slo(slo)
             }
             for i, slo in enumerate(slo_summaries)
         ]
@@ -235,6 +252,41 @@ class SLIReportClient:
             MetricDataResult(timestamps=result["Timestamps"], values=result["Values"])
             for result in response["MetricDataResults"]
         ]
+
+    def get_account_id_for_slo(self, slo: SLOSummary) -> str:
+        """
+        Determines the appropriate AWS account ID for an SLO based on the following logic:
+        1. If the SLO is request based:
+           a. If the Key Attribute has the AWS Account ID - use that.
+           b. If the Key Attribute does not have a 12-digit integer as the AWS Account ID - use the Account ID from the ARN.
+        2. If the SLO is period based:
+           a. Use the SLO ARN always.
+        
+        Args:
+            slo: The SLO summary object
+            
+        Returns:
+            The appropriate AWS account ID
+        """
+        # Extract account ID from ARN
+        arn_account_id = slo.arn.split(':')[4] if ':' in slo.arn else ""
+        
+        # Check if this is a request-based SLO by looking for RequestBasedSli in the key attributes
+        is_request_based = slo.evaluation_type == "RequestBased"
+        
+        if is_request_based:
+            # For request-based SLO, check if key attributes has a valid AWS account ID
+            aws_account_id = slo.key_attributes.get("AwsAccountId", None)
+            
+            # Check if it's a 12-digit integer
+            if aws_account_id and aws_account_id.isdigit() and len(aws_account_id) == 12:
+                return aws_account_id
+            else:
+                # Use the account ID from ARN as fallback
+                return arn_account_id
+        else:
+            # For period-based SLO, always use the account ID from ARN
+            return arn_account_id
 
     def get_sli_status(self, num_breaching: int) -> str:
         """Determines overall SLI status based on number of breaching SLOs."""
@@ -276,9 +328,9 @@ class SLIReportClient:
         for i, result in enumerate(metric_results):
             # Check if we have any values and if the SLO is breached
             if result.values and len(result.values) > 0 and result.values[0] > 0:
-                breaching_slos.append(slo_summaries[i].name)
+                breaching_slos.append(slo_summaries[i].arn)
             else:
-                healthy_slos.append(slo_summaries[i].name)
+                healthy_slos.append(slo_summaries[i].arn)
 
         logger.debug(
             f"SLI report generated - Total SLOs: {len(slo_summaries)}, Breaching: {len(breaching_slos)}, Healthy: {len(healthy_slos)}"
